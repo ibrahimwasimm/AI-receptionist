@@ -103,13 +103,18 @@ def get_open_slots(days_ahead: int = 7, max_slots: int = 10) -> list[str]:
 
         # Enumerate candidate slots
         open_slots: list[str] = []
-        for day_offset in range(1, days_ahead + 1):
+        for day_offset in range(0, days_ahead + 1):
             day_local = (now_local + timedelta(days=day_offset)).date()
             for hour in range(CLINIC_START_HOUR, CLINIC_END_HOUR):
                 slot_local = datetime(
                     day_local.year, day_local.month, day_local.day,
                     hour, 0, tzinfo=TZ
                 )
+                
+                # Skip slots that are in the past
+                if slot_local <= now_local:
+                    continue
+                    
                 key = slot_local.strftime("%Y-%m-%d %H:%M")
                 if key not in busy_starts:
                     open_slots.append(slot_local.strftime("%Y-%m-%d at %H:%M"))
