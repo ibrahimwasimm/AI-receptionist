@@ -39,11 +39,36 @@ async def verify_webhook(request: Request) -> Response:
     return Response(content="Forbidden", status_code=403)
 
 
+from fastapi import Request, Response, BackgroundTasks
+import asyncio
+
+PROCESSED_MESSAGE_IDS = set()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Receive incoming messages  (POST)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def whatsapp_webhook(request: Request) -> Response:
+async def process_message_background(msg_id: str, sender_phone: str, text: str, sender_name: str):
+    """Background task to handle the AI processing and WhatsApp reply."""
+    if msg_id in PROCESSED_MESSAGE_IDS:
+        print(f"[Webhook] Duplicate message {msg_id} ignored.")
+        return
+    PROCESSED_MESSAGE_IDS.add(msg_id)
+
+    # Prevent set from growing infinitely (keep last 1000)
+    if len(PROCESSED_MESSAGE_IDS) > 1000:
+        PROCESSED_MESSAGE_IDS.clear()
+
+    print(f"[WhatsApp] IN {sender_phone}: {text}")
+    
+    # Run the heavy LLM processing in a thread pool so it doesn't block the async event loop
+    reply_text = await asyncio.to_thread(handle_message, sender_phone, text, sender_name)
+
+    await send_whatsapp_message(sender_phone, reply_text)
+    print(f"[WhatsApp] OUT {sender_phone}: {reply_text}")
+
+
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks) -> Response:
     """
     Meta POSTs here every time a patient sends a WhatsApp message.
     Payload path: body → entry[0] → changes[0] → value → messages[0]
@@ -60,6 +85,7 @@ async def whatsapp_webhook(request: Request) -> Response:
             return Response(content="ok", status_code=200)
 
         msg          = value["messages"][0]
+        msg_id       = msg["id"]
         sender_phone = msg["from"]                        # e.g. "923001234567" (no +)
         text         = msg.get("text", {}).get("body", "").strip()
         
@@ -71,20 +97,15 @@ async def whatsapp_webhook(request: Request) -> Response:
         if not text:
             return Response(content="ok", status_code=200)
 
-        safe_text = text.encode("ascii", "backslashreplace").decode("ascii")
-        print(f"[WhatsApp] IN {sender_phone}: {safe_text}")
-
-        # Send exact number (e.g. 923001234567) so Supabase lookup matches
-        reply_text = handle_message(sender_phone, text, sender_name)
-
-        await send_whatsapp_message(sender_phone, reply_text)
-        safe_reply = reply_text.encode("ascii", "backslashreplace").decode("ascii")
-        print(f"[WhatsApp] OUT {sender_phone}: {safe_reply}")
+        # STEP 1: Instantly add to background tasks and return 200 OK
+        background_tasks.add_task(process_message_background, msg_id, sender_phone, text, sender_name)
 
     except (KeyError, IndexError, TypeError) as e:
         print(f"[Webhook] Unexpected payload shape: {e}")
 
+    # ALWAYS return under 5 seconds
     return Response(content="ok", status_code=200)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -48,10 +48,12 @@ async def webhook_verify(request: Request) -> Response:
     return await verify_webhook(request)
 
 
+from fastapi import BackgroundTasks
+
 @app.post("/webhook/whatsapp")
-async def webhook_receive(request: Request) -> Response:
+async def webhook_receive(request: Request, background_tasks: BackgroundTasks) -> Response:
     """Receive incoming WhatsApp messages from Meta."""
-    return await whatsapp_webhook(request)
+    return await whatsapp_webhook(request, background_tasks)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

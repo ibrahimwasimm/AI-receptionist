@@ -221,6 +221,65 @@ IMPORTANT: These tags are parsed by the system. They must appear on their own li
 at the very end of your message. Never explain or mention them to the patient."""
 
 
+MODELS = [
+    "inclusionai/ring-2.6-1t:free",
+    "meta-llama/llama-3-8b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "qwen/qwen-2-7b-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free"
+]
+
+import time
+import datetime
+import threading
+
+CURRENT_MODEL_INDEX = 0
+LAST_RESET_TIME = datetime.datetime.now()
+model_lock = threading.Lock()
+
+def get_chat_completion(messages: list) -> str:
+    global CURRENT_MODEL_INDEX, LAST_RESET_TIME
+    
+    attempts = 0
+    while attempts < len(MODELS) * 2:  # Prevent infinite loops
+        # Reset tracker if 60 minutes have passed
+        now = datetime.datetime.now()
+        with model_lock:
+            if (now - LAST_RESET_TIME).total_seconds() > 3600:
+                CURRENT_MODEL_INDEX = 0
+                LAST_RESET_TIME = now
+            
+            # Safely get the index so it never crashes
+            safe_index = CURRENT_MODEL_INDEX % len(MODELS)
+            current_model = MODELS[safe_index]
+
+        try:
+            print(f"[Agent] Trying model: {current_model}")
+            response = client.chat.completions.create(
+                model=current_model,
+                messages=messages,
+                timeout=10.0
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            error_str = str(e).lower()
+            print(f"[OpenRouter Error] Model {current_model} failed: {error_str}")
+            
+            with model_lock:
+                # Move to next model
+                CURRENT_MODEL_INDEX = (CURRENT_MODEL_INDEX + 1) % len(MODELS)
+                
+            attempts += 1
+            
+            # If we've tried all models in the list once, wait 60 seconds
+            if attempts % len(MODELS) == 0:
+                print("[Agent] All models failed. Waiting 60s in background before retrying...")
+                time.sleep(60)
+            continue
+            
+    return "I am sorry, our AI is currently offline due to high traffic. Please try again later."
+
 def handle_message(phone: str, incoming_message: str, patient_name: str = "Unknown Patient") -> str:
     """Main entry point. Takes the patient's phone + message, returns reply text."""
     patient = get_patient(phone)
@@ -244,18 +303,8 @@ def handle_message(phone: str, incoming_message: str, patient_name: str = "Unkno
     messages = [{"role": "system", "content": build_system_prompt(patient, open_slots, phone)}]
     messages.extend(CONVERSATION_HISTORY[phone])
 
-    # Send the entire recent history to OpenRouter
-    try:
-        response = client.chat.completions.create(
-            model="inclusionai/ring-2.6-1t:free",
-            messages=messages
-        )
-        reply: str = response.choices[0].message.content
-    except Exception as e:
-        print(f"[OpenRouter Error] {e}")
-        # Remove the latest user message from history so it doesn't corrupt sequence
-        CONVERSATION_HISTORY[phone].pop()
-        return "I'm sorry, our AI booking assistant is currently unavailable. Please try again later."
+    # Send the entire recent history to OpenRouter using our intelligent router
+    reply = get_chat_completion(messages)
 
     # ── Parse and act on BOOK tag ────────────────────────────────────────────
     book_match = re.search(r"BOOK:(\d{4}-\d{2}-\d{2}):(\d{2}:\d{2})(?::(.+))?", reply)
