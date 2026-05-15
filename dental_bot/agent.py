@@ -274,11 +274,11 @@ def get_chat_completion(messages: list) -> str:
             
             # If we've tried all models in the list once, wait 60 seconds
             if attempts % len(MODELS) == 0:
-                print("[Agent] All models failed. Waiting 60s in background before retrying...")
-                time.sleep(60)
+                print("[Agent] All models failed. Waiting 30s in background before retrying...")
+                time.sleep(30)
             continue
             
-    return "I am sorry, our AI is currently offline due to high traffic. Please try again later."
+    return "I am sorry, our system is currently offline due to high traffic. We will get back to you shortly."
 
 def handle_message(phone: str, incoming_message: str, patient_name: str = "Unknown Patient") -> str:
     """Main entry point. Takes the patient's phone + message, returns reply text."""
