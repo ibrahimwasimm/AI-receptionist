@@ -133,10 +133,14 @@ async def media_stream(websocket: WebSocket):
 
     # Shared state between the two concurrent coroutines
     state = {
-        "stream_sid"       : None,
-        "call_sid"         : None,
-        "emergency_handled": False,
-        "connected"        : True,
+        "stream_sid"          : None,
+        "call_sid"            : None,
+        "emergency_handled"   : False,
+        "connected"           : True,
+        # audioop.ratecv resampler states — MUST be persisted across chunks
+        # to avoid audio discontinuities (garbled audio / deaf bot)
+        "ratecv_in_state"     : None,   # Twilio 8kHz -> Gemini 16kHz
+        "ratecv_out_state"    : None,   # Gemini 24kHz -> Twilio 8kHz
     }
     transcript_chunks: list[str] = []   # rolling buffer of patient speech
 
@@ -193,16 +197,24 @@ async def _twilio_to_gemini(
                     # Transfer already triggered — stop feeding audio
                     continue
 
-                # base64 → raw µ-law bytes
+                # Stop feeding audio if Gemini session is dead (circuit breaker)
+                if gemini._session_dead:
+                    logger.warning("[Voice] Gemini session is dead — stopping audio feed")
+                    break
+
+                # base64 -> raw mu-law bytes
                 mulaw_bytes = base64.b64decode(msg["media"]["payload"])
 
-                # µ-law 8-bit → PCM 16-bit (same rate: 8kHz)
+                # mu-law 8-bit -> PCM 16-bit (same rate: 8kHz)
                 pcm_8k = audioop.ulaw2lin(mulaw_bytes, _SAMPLE_WIDTH)
 
-                # 8kHz → 16kHz (Gemini expects 16kHz)
-                pcm_16k, _ = audioop.ratecv(
+                # 8kHz -> 16kHz (Gemini expects 16kHz)
+                # IMPORTANT: preserve ratecv state across chunks to avoid
+                # audio discontinuities that break Gemini's VAD
+                pcm_16k, state["ratecv_in_state"] = audioop.ratecv(
                     pcm_8k, _SAMPLE_WIDTH, 1,
-                    _TWILIO_RATE, _GEMINI_IN_RATE, None,
+                    _TWILIO_RATE, _GEMINI_IN_RATE,
+                    state["ratecv_in_state"],  # carry state from previous chunk
                 )
 
                 await gemini.send_audio(pcm_16k)
@@ -241,10 +253,13 @@ async def _gemini_to_twilio(
                 if state["emergency_handled"] or not state["stream_sid"]:
                     continue
 
-                # PCM 24kHz → PCM 8kHz
-                pcm_8k, _ = audioop.ratecv(
+                # PCM 24kHz -> PCM 8kHz
+                # IMPORTANT: preserve ratecv state across chunks to avoid
+                # audio artifacts on the patient's phone
+                pcm_8k, state["ratecv_out_state"] = audioop.ratecv(
                     data, _SAMPLE_WIDTH, 1,
-                    _GEMINI_OUT_RATE, _TWILIO_RATE, None,
+                    _GEMINI_OUT_RATE, _TWILIO_RATE,
+                    state["ratecv_out_state"],  # carry state from previous chunk
                 )
 
                 # PCM 16-bit → µ-law 8-bit
