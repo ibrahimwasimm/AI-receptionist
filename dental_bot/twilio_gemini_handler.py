@@ -280,21 +280,33 @@ async def _receive_from_twilio(
                 raw = base64.b64decode(
                     data["media"]["payload"]
                 )
-                pcm = audioop.ulaw2lin(raw, SAMPLE_WIDTH)
-                pcm, _ = audioop.ratecv(
-                    pcm, SAMPLE_WIDTH, 1,
+                # 2. Convert up to Gemini format (Testing the inbound translation)
+                pcm_8k = audioop.ulaw2lin(raw, SAMPLE_WIDTH)
+                pcm_16k, _ = audioop.ratecv(
+                    pcm_8k, SAMPLE_WIDTH, 1,
                     TWILIO_RATE, GEMINI_IN, None
                 )
-                try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(
-                            data=pcm,
-                            mime_type="audio/pcm;rate=16000"
-                        )
-                    )
-                except Exception as e:
-                    logger.error(f"[Gemini] send_audio error: {e}")
-                    break
+                
+                # --- BOUNCE IT BACK (ECHO TEST) ---
+                # 3. Convert back down to Twilio format
+                pcm_8k_back, _ = audioop.ratecv(
+                    pcm_16k, SAMPLE_WIDTH, 1,
+                    GEMINI_IN, TWILIO_RATE, None
+                )
+                mulaw_bytes_back = audioop.lin2ulaw(pcm_8k_back, SAMPLE_WIDTH)
+                
+                # 4. Package and send right back to Twilio
+                echo_payload = base64.b64encode(mulaw_bytes_back).decode("utf-8")
+                echo_msg = {
+                    "event": "media",
+                    "streamSid": data.get("streamSid", state.get("stream_sid")),
+                    "media": {
+                        "payload": echo_payload
+                    }
+                }
+                
+                # Send it back to the phone line!
+                await websocket.send_text(json.dumps(echo_msg))
 
             elif event == "stop":
                 logger.info("[Voice] Stream stopped")
