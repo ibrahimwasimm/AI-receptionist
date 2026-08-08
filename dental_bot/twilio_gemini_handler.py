@@ -3,6 +3,7 @@ import json
 import base64
 import asyncio
 import audioop
+import time
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -63,11 +64,13 @@ async def media_stream(websocket: WebSocket):
     logger.info("[Voice] WebSocket accepted")
 
     state = {
-        "stream_sid":      None,
-        "call_sid":        None,
-        "caller_number":   None,
-        "ratecv_in_state": None,   # Twilio 8kHz -> Gemini 16kHz resampler state
-        "ratecv_out_state": None,  # Gemini 24kHz -> Twilio 8kHz resampler state
+        "stream_sid":              None,
+        "call_sid":                None,
+        "caller_number":           None,
+        "ratecv_in_state":         None,   # Twilio 8kHz -> Gemini 16kHz resampler state
+        "ratecv_out_state":        None,  # Gemini 24kHz -> Twilio 8kHz resampler state
+        "last_user_speech_time":   None,
+        "waiting_for_first_audio": False,
     }
 
     # Slots are fetched dynamically via tool calling — no upfront blocking Google Calendar API call on stream startup!
@@ -284,6 +287,8 @@ async def _receive_from_twilio(
                     logger.warning(f"[Voice] Greeting trigger warning: {e}")
 
             elif event == "media":
+                state["last_user_speech_time"]   = time.perf_counter()
+                state["waiting_for_first_audio"] = True
                 raw    = base64.b64decode(data["media"]["payload"])
                 pcm_8k = audioop.ulaw2lin(raw, SAMPLE_WIDTH)
 
@@ -372,6 +377,10 @@ async def _send_to_twilio(
                     )
 
                 if audio_bytes:
+                    if state.get("waiting_for_first_audio") and state.get("last_user_speech_time"):
+                        ttfa_ms = (time.perf_counter() - state["last_user_speech_time"]) * 1000
+                        logger.info(f"⚡ [Latency] Time-To-First-Audio (TTFA): {ttfa_ms:.2f} ms")
+                        state["waiting_for_first_audio"] = False
                     # 24kHz -> 8kHz resample with state persistence across chunks
                     pcm, state["ratecv_out_state"] = audioop.ratecv(
                         audio_bytes, SAMPLE_WIDTH, 1,
