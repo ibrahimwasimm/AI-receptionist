@@ -40,8 +40,11 @@ CLINIC_END_HOUR   = 22  # 10 pm (last slot starts at 21:00)
 # Internal: build / refresh the Calendar service
 # ─────────────────────────────────────────────────────────────────────────────
 
+_SERVICE_CACHE = None
+
 def _get_service():
     """Load credentials from token.json, refresh if expired, return service."""
+    global _SERVICE_CACHE
     creds = None
 
     if os.path.exists(TOKEN_PATH):
@@ -56,8 +59,12 @@ def _get_service():
 
         with open(TOKEN_PATH, "w") as f:
             f.write(creds.to_json())
+        _SERVICE_CACHE = None
 
-    return build("calendar", "v3", credentials=creds)
+    if _SERVICE_CACHE is None:
+        _SERVICE_CACHE = build("calendar", "v3", credentials=creds)
+
+    return _SERVICE_CACHE
 
 
 # ─────────────────────────────────────────────────────────────────────────────

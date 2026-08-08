@@ -10,8 +10,6 @@ load_dotenv()
 from reminders import reminder_loop
 from whatsapp_handler import verify_webhook, whatsapp_webhook
 from twilio_gemini_handler import voice_webhook, media_stream
-from voice.voice_main import router as voice_router    # Twilio voice feature
-from voice.telnyx_main import router as telnyx_router  # Telnyx voice feature
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,8 +26,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.include_router(voice_router)   # /voice, /voice/dial-fallback, /media-stream
-app.include_router(telnyx_router)  # /telnyx/voice, /telnyx/stream, /telnyx/transfer-result
 
 @app.get("/")
 def root():

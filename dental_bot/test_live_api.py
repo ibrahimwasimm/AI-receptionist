@@ -19,11 +19,11 @@ async def test_live_v1beta():
     from google import genai
     client = genai.Client(api_key=GEMINI_API_KEY)
     try:
-        async with client.aio.live.connect(model="gemini-2.0-flash-live-001") as session:
-            print("[v1beta] gemini-2.0-flash-live-001 -> CONNECTED!")
+        async with client.aio.live.connect(model="gemini-2.5-flash-native-audio-latest") as session:
+            print("[v1beta] gemini-2.5-flash-native-audio-latest -> CONNECTED SUCCESSFULLY!")
             return True
     except Exception as e:
-        print(f"[v1beta] gemini-2.0-flash-live-001 -> FAILED: {e}")
+        print(f"[v1beta] gemini-2.5-flash-native-audio-latest -> FAILED: {e}")
         return False
 
 async def test_live_v1alpha():
@@ -41,16 +41,18 @@ async def test_live_v1alpha():
 async def test_regular_api():
     from google import genai
     client = genai.Client(api_key=GEMINI_API_KEY)
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents="Say hello in one word."
-        )
-        print(f"[REST API] generate_content -> WORKS: {response.text.strip()}")
-        return True
-    except Exception as e:
-        print(f"[REST API] generate_content -> FAILED: {e}")
-        return False
+    for model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents="Say hello in one word."
+            )
+            print(f"[REST API] {model} -> WORKS: {response.text.strip()}")
+            return True
+        except Exception as e:
+            err = str(e)[:120]
+            print(f"[REST API] {model} -> FAILED: {err}")
+    return False
 
 async def main():
     print("=" * 60)

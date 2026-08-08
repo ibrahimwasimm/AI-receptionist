@@ -62,9 +62,11 @@ async def media_stream(websocket: WebSocket):
     logger.info("[Voice] WebSocket accepted")
 
     state = {
-        "stream_sid":    None,
-        "call_sid":      None,
-        "caller_number": None,
+        "stream_sid":      None,
+        "call_sid":        None,
+        "caller_number":   None,
+        "ratecv_in_state": None,   # Twilio 8kHz -> Gemini 16kHz resampler state
+        "ratecv_out_state": None,  # Gemini 24kHz -> Twilio 8kHz resampler state
     }
 
     try:
@@ -78,6 +80,8 @@ async def media_stream(websocket: WebSocket):
 
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -212,30 +216,14 @@ Phir transfer_to_doctor call karo.
 
     stopped = asyncio.Event()
 
+    LIVE_MODEL_NAME = "gemini-2.5-flash-native-audio-latest"
     try:
+        logger.info(f"[Voice] 🚀 Initializing Gemini Live Session | Model: {LIVE_MODEL_NAME}")
         async with gemini_client.aio.live.connect(
-            model="gemini-2.5-flash-native-audio-latest",
+            model=LIVE_MODEL_NAME,
             config=config
         ) as session:
             logger.info("[Voice] Gemini Live session opened")
-
-            # Trigger immediate Urdu greeting
-            try:
-                await session.send_client_content(
-                    turns=[
-                        types.Content(
-                            role="user",
-                            parts=[types.Part.from_text(
-                                text="Sana, call aa gayi hai. Abhi Urdu mein greeting do."
-                            )]
-                        )
-                    ],
-                    turn_complete=True
-                )
-                logger.info("[Voice] Urdu greeting trigger sent")
-            except Exception as e:
-                logger.warning(f"[Voice] Greeting trigger warning: {e}")
-
             await asyncio.gather(
                 _receive_from_twilio(websocket, session, state, stopped),
                 _send_to_twilio(websocket, session, state, stopped)
@@ -268,45 +256,49 @@ async def _receive_from_twilio(
                 start  = data.get("start", {})
                 state["call_sid"] = start.get("callSid", "")
                 params = start.get("customParameters", {})
-                state["caller_number"] = params.get(
-                    "caller", "unknown"
-                )
+                state["caller_number"] = params.get("caller", "unknown")
                 logger.info(
-                    f"[Voice] Stream started | "
-                    f"Caller: {state['caller_number']}"
+                    f"[Voice] Stream started | Caller: {state['caller_number']}"
                 )
 
+                # Trigger greeting ONCE stream_sid is set
+                try:
+                    await session.send_client_content(
+                        turns=[
+                            types.Content(
+                                role="user",
+                                parts=[types.Part.from_text(
+                                    text="Sana, call aa gayi hai. Abhi Urdu mein greeting do."
+                                )]
+                            )
+                        ],
+                        turn_complete=True
+                    )
+                    logger.info("[Voice] Urdu greeting trigger sent")
+                except Exception as e:
+                    logger.warning(f"[Voice] Greeting trigger warning: {e}")
+
             elif event == "media":
-                raw = base64.b64decode(
-                    data["media"]["payload"]
-                )
-                # 2. Convert up to Gemini format (Testing the inbound translation)
+                raw    = base64.b64decode(data["media"]["payload"])
                 pcm_8k = audioop.ulaw2lin(raw, SAMPLE_WIDTH)
-                pcm_16k, _ = audioop.ratecv(
+
+                # 8kHz -> 16kHz resample with state persistence across chunks
+                pcm_16k, state["ratecv_in_state"] = audioop.ratecv(
                     pcm_8k, SAMPLE_WIDTH, 1,
-                    TWILIO_RATE, GEMINI_IN, None
+                    TWILIO_RATE, GEMINI_IN,
+                    state["ratecv_in_state"]
                 )
-                
-                # --- BOUNCE IT BACK (ECHO TEST) ---
-                # 3. Convert back down to Twilio format
-                pcm_8k_back, _ = audioop.ratecv(
-                    pcm_16k, SAMPLE_WIDTH, 1,
-                    GEMINI_IN, TWILIO_RATE, None
-                )
-                mulaw_bytes_back = audioop.lin2ulaw(pcm_8k_back, SAMPLE_WIDTH)
-                
-                # 4. Package and send right back to Twilio
-                echo_payload = base64.b64encode(mulaw_bytes_back).decode("utf-8")
-                echo_msg = {
-                    "event": "media",
-                    "streamSid": data.get("streamSid", state.get("stream_sid")),
-                    "media": {
-                        "payload": echo_payload
-                    }
-                }
-                
-                # Send it back to the phone line!
-                await websocket.send_text(json.dumps(echo_msg))
+
+                # Forward live audio to Gemini
+                try:
+                    await session.send_realtime_input(
+                        audio=types.Blob(
+                            data      = pcm_16k,
+                            mime_type = "audio/pcm;rate=16000"
+                        )
+                    )
+                except Exception as e:
+                    logger.error(f"[Voice] send_realtime_input error: {e}")
 
             elif event == "stop":
                 logger.info("[Voice] Stream stopped")
@@ -325,60 +317,83 @@ async def _send_to_twilio(
     stopped: asyncio.Event
 ):
     try:
-        async for response in session.receive():
-            if stopped.is_set():
-                break
-            audio_bytes = None
-            if hasattr(response, "data") and response.data is not None:
-                try:
-                    audio_bytes = response.data
-                except Exception:
-                    pass
+        # Loop continuously to keep the connection open across multiple conversation turns
+        while not stopped.is_set():
+            async for response in session.receive():
+                if stopped.is_set():
+                    break
 
-            if not audio_bytes and hasattr(response, "server_content") and response.server_content:
-                sc = response.server_content
-                if hasattr(sc, "model_turn") and sc.model_turn and hasattr(sc.model_turn, "parts"):
-                    for part in sc.model_turn.parts:
-                        if hasattr(part, "inline_data") and part.inline_data and part.inline_data.data:
-                            audio_bytes = part.inline_data.data
-                            break
+                audio_bytes = None
 
-            if audio_bytes:
-                pcm, _ = audioop.ratecv(
-                    audio_bytes, SAMPLE_WIDTH, 1,
-                    GEMINI_OUT, TWILIO_RATE, None
-                )
-                mulaw   = audioop.lin2ulaw(pcm, SAMPLE_WIDTH)
-                payload = base64.b64encode(mulaw).decode()
-                if state["stream_sid"]:
-                    await websocket.send_text(json.dumps({
-                        "event":     "media",
-                        "streamSid": state["stream_sid"],
-                        "media":     {"payload": payload}
-                    }))
+                if hasattr(response, "server_content") and response.server_content:
+                    sc = response.server_content
 
-            if hasattr(response, "text") and response.text:
-                logger.info(
-                    f"[Voice] Transcript: {response.text}"
-                )
+                    if hasattr(sc, "model_turn") and sc.model_turn and hasattr(sc.model_turn, "parts"):
+                        for part in sc.model_turn.parts:
+                            if hasattr(part, "inline_data") and part.inline_data and part.inline_data.data:
+                                audio_bytes = part.inline_data.data
+                            elif hasattr(part, "text") and part.text:
+                                logger.info(f"[Voice] Bot text: {part.text}")
 
-            if (hasattr(response, "tool_call") and
-                    response.tool_call is not None):
-                for fn in response.tool_call.function_calls:
-                    result = await _handle_tool(
-                        fn.name,
-                        dict(fn.args),
-                        state
+                    if hasattr(sc, "output_transcription") and sc.output_transcription and sc.output_transcription.text:
+                        logger.info(f"[Voice] Bot spoken: {sc.output_transcription.text}")
+                    if hasattr(sc, "input_transcription") and sc.input_transcription and sc.input_transcription.text:
+                        logger.info(f"[Voice] User spoken: {sc.input_transcription.text}")
+
+                # Log token usage metadata if provided in response
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    um = response.usage_metadata
+                    in_tokens  = getattr(um, "prompt_token_count", 0)
+                    out_tokens = getattr(um, "candidates_token_count", 0)
+                    tot_tokens = getattr(um, "total_token_count", 0)
+                    logger.info(
+                        f"[Usage] Tokens — Input: {in_tokens} | Output: {out_tokens} | Total: {tot_tokens}"
                     )
-                    await session.send_tool_response(
-                        function_responses=[
-                            types.FunctionResponse(
-                                id=fn.id,
-                                name=fn.name,
-                                response={"result": result}
+
+                if audio_bytes:
+                    # 24kHz -> 8kHz resample with state persistence across chunks
+                    pcm, state["ratecv_out_state"] = audioop.ratecv(
+                        audio_bytes, SAMPLE_WIDTH, 1,
+                        GEMINI_OUT, TWILIO_RATE,
+                        state["ratecv_out_state"]
+                    )
+                    mulaw   = audioop.lin2ulaw(pcm, SAMPLE_WIDTH)
+                    payload = base64.b64encode(mulaw).decode()
+                    if state["stream_sid"]:
+                        await websocket.send_text(json.dumps({
+                            "event":     "media",
+                            "streamSid": state["stream_sid"],
+                            "media":     {"payload": payload}
+                        }))
+                        logger.info(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Audio chunk sent back to Twilio")
+
+                if hasattr(response, "tool_call") and response.tool_call is not None:
+                    for fn in response.tool_call.function_calls:
+                        t_start = datetime.now()
+                        logger.info(f"[{t_start.strftime('%H:%M:%S.%f')[:-3]}] Function call started: {fn.name}")
+                        try:
+                            # 5-second timeout safeguard so a slow API never hangs the call
+                            result = await asyncio.wait_for(
+                                _handle_tool(fn.name, dict(fn.args), state),
+                                timeout=5.0
                             )
-                        ]
-                    )
+                        except asyncio.TimeoutError:
+                            logger.error(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Function call timed out: {fn.name}")
+                            result = "Action timed out, but proceeding with booking details."
+                        
+                        t_end = datetime.now()
+                        duration_ms = (t_end - t_start).total_seconds() * 1000
+                        logger.info(f"[{t_end.strftime('%H:%M:%S.%f')[:-3]}] Function call completed: {fn.name} (Took {duration_ms:.1f}ms)")
+
+                        await session.send_tool_response(
+                            function_responses=[
+                                types.FunctionResponse(
+                                    id=fn.id,
+                                    name=fn.name,
+                                    response={"result": result}
+                                )
+                            ]
+                        )
 
     except Exception as e:
         logger.error(f"[Voice] send error: {e}")
@@ -398,147 +413,115 @@ async def _handle_tool(
         try:
             slots = await asyncio.to_thread(get_open_slots)
             if slots:
-                return f"Available: {', '.join(slots)}"
+                return f"Available slots this week:\n" + "\n".join(slots)
             return "No slots available this week."
         except Exception as e:
-            logger.error(f"[Tool] get_open_slots: {e}")
-            return "Could not fetch slots."
+            return f"Could not fetch slots: {e}"
 
     elif name == "book_appointment":
         try:
-            patient_name  = args.get("patient_name", "Patient")
-            patient_phone = args.get(
-                "patient_phone",
-                state["caller_number"]
-            )
-            date_str  = args["date_str"]
-            time_str  = args["time_str"]
-            procedure = args.get(
-                "procedure", "Dental Appointment"
-            )
-
-            await asyncio.to_thread(
-                register_patient,
-                patient_phone,
-                patient_name
-            )
-
-            success = await asyncio.to_thread(
+            logger.info(f"[Tool] Booking: {args}")
+            result = await asyncio.to_thread(
                 create_booking,
-                patient_name=patient_name,
-                phone=patient_phone,
-                date_str=date_str,
-                time_str=time_str,
-                procedure=procedure
+                args.get("patient_name", "Unknown"),
+                args.get("patient_phone", ""),
+                args.get("date_str", ""),
+                args.get("time_str", ""),
+                args.get("procedure", "Dental Appointment")
             )
+            logger.info(f"[Tool] create_booking returned: {result}")
 
-            if success:
-                slot_time = datetime.strptime(
-                    f"{date_str} {time_str}",
-                    "%Y-%m-%d %H:%M"
-                ).replace(
-                    tzinfo=ZoneInfo("Asia/Karachi")
-                )
-                supabase.table("appointments").insert({
-                    "patient_phone": patient_phone,
-                    "patient_name":  patient_name,
-                    "procedure":     procedure,
-                    "slot_time":     slot_time.isoformat(),
-                    "booked":        True
-                }).execute()
+            if result:  # create_booking returns True/False
+                # Register patient in Supabase if new
+                try:
+                    patient = await asyncio.to_thread(
+                        get_patient, args.get("patient_phone", "")
+                    )
+                    if not patient:
+                        await asyncio.to_thread(
+                            register_patient,
+                            args.get("patient_name", "Unknown"),
+                            args.get("patient_phone", "")
+                        )
+                        logger.info("[Tool] New patient registered in Supabase")
+                except Exception as e:
+                    logger.warning(f"[Tool] Patient DB registration failed: {e}")
 
-                await asyncio.to_thread(
-                    notify_doctor,
-                    patient_name,
-                    patient_phone,
-                    date_str,
-                    time_str
-                )
+                # Notify doctor in background task (non-blocking)
+                def _bg_notify():
+                    try:
+                        notify_doctor(
+                            f"NEW BOOKING via Voice Call:\n"
+                            f"Patient: {args.get('patient_name', 'Unknown')}\n"
+                            f"Phone: {args.get('patient_phone', '')}\n"
+                            f"Date: {args.get('date_str', '')}\n"
+                            f"Time: {args.get('time_str', '')}\n"
+                            f"Procedure: {args.get('procedure', 'Dental Appointment')}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Tool] Doctor notification failed: {e}")
 
-                logger.info(
-                    f"[Tool] Booked: {patient_name} "
-                    f"{date_str} {time_str}"
-                )
-                return (
-                    f"Booked. {patient_name} on "
-                    f"{date_str} at {time_str} "
-                    f"for {procedure}."
-                )
+                asyncio.create_task(asyncio.to_thread(_bg_notify))
+
+                return f"Appointment booked successfully! {args.get('patient_name', '')} ka appointment {args.get('date_str', '')} ko {args.get('time_str', '')} par book ho gaya."
             else:
-                return "Slot taken. Offer another time."
-
+                return "Booking failed — slot may already be taken or calendar error."
         except Exception as e:
-            logger.error(f"[Tool] book_appointment: {e}")
-            return "Booking failed. Try again."
+            logger.error(f"[Tool] book_appointment error: {e}")
+            return f"Booking failed: {e}"
 
     elif name == "cancel_appointment":
         try:
-            phone    = args.get(
-                "patient_phone",
-                state["caller_number"]
-            )
-            date_str = args["date_str"]
-            time_str = args["time_str"]
-
-            await asyncio.to_thread(
+            logger.info(f"[Tool] Cancelling: {args}")
+            result = await asyncio.to_thread(
                 cancel_booking,
-                phone=phone,
-                date_str=date_str,
-                time_str=time_str
+                args.get("patient_phone", ""),
+                args.get("date_str", ""),
+                args.get("time_str", "")
             )
-
-            logger.info(
-                f"[Tool] Cancelled: {phone} "
-                f"{date_str} {time_str}"
-            )
-            return f"Cancelled {date_str} at {time_str}."
-
+            logger.info(f"[Tool] cancel_booking returned: {result}")
+            if result:  # cancel_booking returns True/False
+                return "Appointment cancelled successfully!"
+            else:
+                return "Could not find appointment to cancel — check phone number, date and time."
         except Exception as e:
-            logger.error(f"[Tool] cancel_appointment: {e}")
-            return "Cancellation failed."
+            logger.error(f"[Tool] cancel_appointment error: {e}")
+            return f"Cancellation failed: {e}"
 
     elif name == "transfer_to_doctor":
-        doctor = args.get("doctor", "emergency")
-        await _transfer_call(state["call_sid"], doctor)
-        return f"Transferring to {doctor}."
+        doctor = args.get("doctor", "dr_mustafa")
+        if doctor == "dr_mustafa":
+            dest_number = DR_MUSTAFA_NUMBER
+            doctor_name = "Dr. Mustafa"
+        elif doctor == "dr_qasim":
+            dest_number = DR_QASIM_NUMBER
+            doctor_name = "Dr. Qasim"
+        else:
+            dest_number = EMERGENCY_NUMBER or DR_MUSTAFA_NUMBER
+            doctor_name = "Emergency"
 
-    return "Unknown tool."
+        logger.info(f"[Tool] Call transfer requested to {doctor_name} ({dest_number})")
 
-
-async def _transfer_call(call_sid: str, doctor: str):
-    numbers = {
-        "dr_mustafa": DR_MUSTAFA_NUMBER,
-        "dr_qasim":   DR_QASIM_NUMBER,
-        "emergency":  EMERGENCY_NUMBER,
-    }
-    target = numbers.get(doctor, EMERGENCY_NUMBER)
-
-    if not call_sid:
-        logger.error("[Transfer] No call_sid")
-        return
-    if not target:
-        logger.error(f"[Transfer] No number for {doctor}")
-        return
-
-    try:
-        twilio = TwilioClient(
-            TWILIO_ACCOUNT_SID,
-            TWILIO_AUTH_TOKEN
-        )
-        await asyncio.to_thread(
-            lambda: twilio.calls(call_sid).update(
-                twiml=f"""<?xml version="1.0" encoding="UTF-8"?>
+        if state.get("call_sid") and dest_number:
+            try:
+                client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                ws_url = NGROK_URL.replace("https://", "wss://")
+                twiml_transfer = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="ur-PK">
-    Aap ko doctor se connect kar rahi hoon.
-    Ek moment please.
-  </Say>
-  <Dial>{target}</Dial>
+  <Say voice="Polly.Aditi" language="en-IN">Please hold while I transfer your call to {doctor_name}.</Say>
+  <Dial callerId="{dest_number}">
+    <Number>{dest_number}</Number>
+  </Dial>
 </Response>"""
-            )
-        )
-        logger.info(
-            f"[Transfer] {call_sid} \u2192 {doctor} {target}"
-        )
-    except Exception as e:
-        logger.error(f"[Transfer] Failed: {e}")
+                await asyncio.to_thread(
+                    client.calls(state["call_sid"]).update,
+                    twiml=twiml_transfer
+                )
+                return f"Call transfer initiated to {doctor_name}."
+            except Exception as e:
+                logger.error(f"[Tool] Transfer failed: {e}")
+                return f"Transfer failed: {e}"
+
+        return f"Could not transfer — phone number for {doctor_name} is missing."
+
+    return "Unknown tool called."
