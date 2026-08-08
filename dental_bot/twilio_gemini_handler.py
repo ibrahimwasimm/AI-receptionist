@@ -19,6 +19,7 @@ logger = logging.getLogger("voice")
 from gcal import get_open_slots, create_booking, cancel_booking
 from agent import notify_doctor, get_patient, register_patient
 from database import supabase
+from female_verbal_fillers import VERBAL_FILLER_CHECKING, VERBAL_FILLER_BOOKING, VERBAL_FILLER_GENERAL
 
 TWILIO_ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -69,12 +70,8 @@ async def media_stream(websocket: WebSocket):
         "ratecv_out_state": None,  # Gemini 24kHz -> Twilio 8kHz resampler state
     }
 
-    try:
-        open_slots = await asyncio.to_thread(get_open_slots)
-        slots_text = "\n".join(open_slots) if open_slots \
-                     else "No slots available this week."
-    except Exception:
-        slots_text = "Could not load slots."
+    # Slots are fetched dynamically via tool calling — no upfront blocking Google Calendar API call on stream startup!
+    slots_text = "Use the get_available_slots tool when a patient asks about available timings or appointments."
 
     gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -207,6 +204,11 @@ Agar patient doctor se milna chahe:
 Pucho: "Dr. Mustafa ya Dr. Qasim?"
 Phir transfer_to_doctor call karo.
 
+════ FEMALE GENDER GRAMMAR RULE (STRICT CRITICAL) ════
+Aap Larki / Female (Sana) hain. Hamesha FEMALE Urdu grammar use karein!
+- SAHI (Female): "Main batati hoon", "Main karti hoon", "Main dekhti hoon", "Main confirm karti hoon", "Main bata deti hoon"
+- SAKHT MANA HAI (Male): "Main batata hoon", "Main karta hoon", "Main dekhta hoon", "Main confirm karta hoon"
+
 ════ RULES ════
 1. SIRF Urdu ya Roman Urdu mein jawab do
 2. Short jawab — max 2-3 sentences
@@ -241,6 +243,9 @@ async def _receive_from_twilio(
     state: dict,
     stopped: asyncio.Event
 ):
+    pcm_buffer = bytearray()
+    CHUNK_SIZE = 3200  # 100ms of 16kHz 16-bit mono PCM (16000 * 2 bytes * 0.1s)
+
     try:
         async for message in websocket.iter_text():
             if stopped.is_set():
@@ -289,20 +294,36 @@ async def _receive_from_twilio(
                     state["ratecv_in_state"]
                 )
 
-                # Forward live audio to Gemini
-                try:
-                    await session.send_realtime_input(
-                        audio=types.Blob(
-                            data      = pcm_16k,
-                            mime_type = "audio/pcm;rate=16000"
+                # Buffer into 100ms chunks before forwarding to Gemini
+                pcm_buffer.extend(pcm_16k)
+                if len(pcm_buffer) >= CHUNK_SIZE:
+                    try:
+                        await session.send_realtime_input(
+                            audio=types.Blob(
+                                data      = bytes(pcm_buffer),
+                                mime_type = "audio/pcm;rate=16000"
+                            )
                         )
-                    )
-                except Exception as e:
-                    logger.error(f"[Voice] send_realtime_input error: {e}")
+                        pcm_buffer.clear()
+                    except Exception as e:
+                        logger.error(f"[Voice] send_realtime_input error: {e}")
 
             elif event == "stop":
                 logger.info("[Voice] Stream stopped")
                 break
+
+        # Flush any remaining audio in buffer on exit
+        if pcm_buffer and not stopped.is_set():
+            try:
+                await session.send_realtime_input(
+                    audio=types.Blob(
+                        data      = bytes(pcm_buffer),
+                        mime_type = "audio/pcm;rate=16000"
+                    )
+                )
+                pcm_buffer.clear()
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"[Voice] receive error: {e}")
@@ -368,6 +389,26 @@ async def _send_to_twilio(
                         logger.info(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Audio chunk sent back to Twilio")
 
                 if hasattr(response, "tool_call") and response.tool_call is not None:
+                    # Instantly stream an authentic female Urdu verbal filler to Twilio (<50ms)
+                    if state.get("stream_sid"):
+                        try:
+                            # Pick appropriate female verbal filler based on function call
+                            filler_payload = VERBAL_FILLER_GENERAL
+                            for fn in response.tool_call.function_calls:
+                                if fn.name == "get_available_slots":
+                                    filler_payload = VERBAL_FILLER_CHECKING
+                                elif fn.name == "book_appointment":
+                                    filler_payload = VERBAL_FILLER_BOOKING
+
+                            await websocket.send_text(json.dumps({
+                                "event":     "media",
+                                "streamSid": state["stream_sid"],
+                                "media":     {"payload": filler_payload}
+                            }))
+                            logger.info(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Sent female Urdu verbal filler to Twilio")
+                        except Exception as e:
+                            logger.warning(f"[Voice] Verbal filler send warning: {e}")
+
                     for fn in response.tool_call.function_calls:
                         t_start = datetime.now()
                         logger.info(f"[{t_start.strftime('%H:%M:%S.%f')[:-3]}] Function call started: {fn.name}")
