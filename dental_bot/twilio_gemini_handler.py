@@ -226,7 +226,7 @@ Aap Larki / Female (Sana) hain. Hamesha FEMALE Urdu grammar use karein!
 
     stopped = asyncio.Event()
 
-    LIVE_MODEL_NAME = "gemini-2.5-flash-native-audio-latest"
+    LIVE_MODEL_NAME = "gemini-3.1-flash-live-preview"
     try:
         logger.info(f"[Voice] 🚀 Initializing Gemini Live Session | Model: {LIVE_MODEL_NAME}")
         async with gemini_client.aio.live.connect(

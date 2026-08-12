@@ -44,22 +44,35 @@ CLINIC_END_HOUR   = 22  # 10 pm (last slot starts at 21:00)
 _SERVICE_CACHE = None
 
 def _get_service():
-    """Load credentials from token.json, refresh if expired, return service."""
+    """Load credentials from token.json or GOOGLE_TOKEN_JSON env var, refresh if expired, return service."""
     global _SERVICE_CACHE
+    import json as _json
     creds = None
 
+    # 1. Try loading from file (local dev)
     if os.path.exists(TOKEN_PATH):
         creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+
+    # 2. Fall back to environment variable (Render / cloud deployment)
+    elif os.getenv("GOOGLE_TOKEN_JSON"):
+        token_data = _json.loads(os.getenv("GOOGLE_TOKEN_JSON"))
+        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            # Write refreshed token back to file if possible
+            try:
+                with open(TOKEN_PATH, "w") as f:
+                    f.write(creds.to_json())
+            except Exception:
+                pass  # On Render, disk may be read-only — that's OK
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDS_PATH, SCOPES)
-            creds = flow.run_local_server(port=0)
-
-        with open(TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
+            # Cannot run browser-based auth on a cloud server
+            raise RuntimeError(
+                "Google Calendar not authorized. "
+                "Run run_auth.py locally and set GOOGLE_TOKEN_JSON on Render."
+            )
         _SERVICE_CACHE = None
 
     if _SERVICE_CACHE is None:
