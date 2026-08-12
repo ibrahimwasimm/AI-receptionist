@@ -12,10 +12,11 @@ Usage:
 
 import sys
 import os
+import httpx
 from dotenv import load_dotenv
 from twilio.rest import Client
 
-load_dotenv()
+load_dotenv(override=True)
 
 ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 AUTH_TOKEN  = os.getenv("TWILIO_AUTH_TOKEN")
@@ -32,21 +33,34 @@ if not TO_NUMBER:
     sys.exit(1)
 
 if not NGROK_URL:
-    print("[ERROR] NGROK_URL is not set in .env -- make sure ngrok is running and the URL is saved.")
+    print("[ERROR] NGROK_URL is not set in .env -- make sure NGROK_URL is saved in .env.")
     sys.exit(1)
 
+# ── Server Health / Auto-Wake Ping ─────────────────────────────────────────────
+print(f"[CHECK] Pinging server to ensure it is awake ({NGROK_URL}) ...")
+try:
+    with httpx.Client(timeout=30.0) as http_client:
+        resp = http_client.get(NGROK_URL)
+        if resp.status_code == 200:
+            print("[CHECK] Server is awake and ready! ✅")
+        else:
+            print(f"[WARNING] Server returned status code {resp.status_code}")
+except Exception as e:
+    print(f"[WARNING] Server ping check: {e}")
+
 # ── TwiML: answer → open media stream → connect to your voice agent ────────────
+clean_domain = NGROK_URL.replace("https://", "").replace("http://", "")
 TWIML = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="wss://{NGROK_URL.replace('https://','').replace('http://','')}/media-stream">
+    <Stream url="wss://{clean_domain}/media-stream">
       <Parameter name="caller" value="{TO_NUMBER}" />
     </Stream>
   </Connect>
 </Response>"""
 
 print(f"[CALLING] {TO_NUMBER} from {FROM_NUMBER} ...")
-print(f"[WEBSOCKET] wss://{NGROK_URL.replace('https://','').replace('http://','')}/media-stream")
+print(f"[WEBSOCKET] wss://{clean_domain}/media-stream")
 
 client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
