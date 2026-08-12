@@ -46,6 +46,7 @@ async def webhook_receive(
     return await whatsapp_webhook(request, background_tasks)
 
 @app.post("/webhook/voice")
+@app.post("/voice")
 async def twilio_voice(request: Request) -> Response:
     return await voice_webhook(request)
 

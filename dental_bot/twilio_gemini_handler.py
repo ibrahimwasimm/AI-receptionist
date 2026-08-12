@@ -41,8 +41,13 @@ async def voice_webhook(request: Request) -> Response:
     form          = await request.form()
     caller_number = form.get("From", "unknown")
     call_sid      = form.get("CallSid", "")
-    logger.info(f"[Voice] Incoming call from {caller_number}")
-    ws_url = NGROK_URL.replace("https://", "wss://")
+    # Smart Host detection for Render cloud deployment & ngrok
+    host = request.headers.get("host") or ""
+    if host and ("onrender.com" in host or "ngrok" in host):
+        ws_url = f"wss://{host}"
+    else:
+        ws_url = NGROK_URL.replace("https://", "wss://").replace("http://", "ws://")
+
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>

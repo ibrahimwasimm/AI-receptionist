@@ -1,10 +1,11 @@
 """
 gcal.py — Google Calendar Integration
 ======================================
-Two public functions:
+Public functions:
   - get_open_slots()   → returns up to 10 free 1-hour slot strings
-  - create_booking()   → creates a Calendar event and returns True/False
-  - cancel_booking()   → deletes a matching Calendar event
+  - create_booking()   → atomically reserves slot in Supabase + creates GCal event
+                         returns "success", "slot_taken", or "error"
+  - cancel_booking()   → deletes a matching Calendar event + Supabase row
 """
 
 import os

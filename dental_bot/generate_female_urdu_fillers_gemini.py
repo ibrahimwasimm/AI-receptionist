@@ -19,7 +19,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 def generate_urdu_filler_gemini(text: str, filename: str):
     print(f"Generating female Urdu voice via Gemini for: {filename}...")
     response = client.models.generate_content(
-        model="gemini-2.5-flash-preview-tts",
+        model="gemini-2.5-flash-preview-tts"
         contents=f"Say exactly this phrase in female Urdu voice, output ONLY audio: {text}",
         config=types.GenerateContentConfig(
             response_modalities=["AUDIO"],
