@@ -49,29 +49,45 @@ def _get_service():
     import json as _json
     creds = None
 
-    # 1. Try loading from file (local dev)
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    # 1. Try loading from file (local dev) if file exists and is non-empty
+    if os.path.exists(TOKEN_PATH) and os.path.getsize(TOKEN_PATH) > 0:
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        except Exception as e:
+            print(f"[GCal] Warning: Failed to load local token.json: {e}")
 
     # 2. Fall back to environment variable (Render / cloud deployment)
-    elif os.getenv("GOOGLE_TOKEN_JSON"):
-        token_data = _json.loads(os.getenv("GOOGLE_TOKEN_JSON"))
-        creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+    if not creds:
+        token_env = os.getenv("GOOGLE_TOKEN_JSON", "").strip()
+        if token_env:
+            try:
+                token_data = _json.loads(token_env)
+                creds = Credentials.from_authorized_user_info(token_data, SCOPES)
+            except Exception as e:
+                raise RuntimeError(
+                    f"GOOGLE_TOKEN_JSON environment variable on Render is invalid JSON: {e}"
+                ) from e
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            # Write refreshed token back to file if possible
             try:
-                with open(TOKEN_PATH, "w") as f:
-                    f.write(creds.to_json())
-            except Exception:
-                pass  # On Render, disk may be read-only — that's OK
-        else:
+                creds.refresh(Request())
+                # Write refreshed token back to file if possible
+                try:
+                    with open(TOKEN_PATH, "w") as f:
+                        f.write(creds.to_json())
+                except Exception:
+                    pass  # On Render, disk may be read-only — that's OK
+            except Exception as refresh_err:
+                print(f"[GCal] Refresh token failed: {refresh_err}")
+                creds = None
+
+        if not creds or not creds.valid:
             # Cannot run browser-based auth on a cloud server
             raise RuntimeError(
-                "Google Calendar not authorized. "
-                "Run run_auth.py locally and set GOOGLE_TOKEN_JSON on Render."
+                "Google Calendar token has expired or been revoked. "
+                "Please run 'python run_auth.py' locally to generate a fresh token.json, "
+                "then copy its contents into GOOGLE_TOKEN_JSON on Render."
             )
         _SERVICE_CACHE = None
 

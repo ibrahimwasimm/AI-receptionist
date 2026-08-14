@@ -414,11 +414,19 @@ async def _send_to_twilio(
                                 elif fn.name == "book_appointment":
                                     filler_payload = VERBAL_FILLER_BOOKING
 
-                            await websocket.send_text(json.dumps({
-                                "event":     "media",
-                                "streamSid": state["stream_sid"],
-                                "media":     {"payload": filler_payload}
-                            }))
+                            # Chunk filler_payload into 100ms segments (800 bytes mulaw = 1064 base64 chars)
+                            # to prevent Twilio 31951 Protocol Invalid Message error caused by oversized payloads
+                            CHUNK_B64_SIZE = 1064
+                            for i in range(0, len(filler_payload), CHUNK_B64_SIZE):
+                                if stopped.is_set():
+                                    break
+                                chunk = filler_payload[i:i + CHUNK_B64_SIZE]
+                                await websocket.send_text(json.dumps({
+                                    "event":     "media",
+                                    "streamSid": state["stream_sid"],
+                                    "media":     {"payload": chunk}
+                                }))
+                                await asyncio.sleep(0.08)
                             logger.info(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] Sent female Urdu verbal filler to Twilio")
                         except Exception as e:
                             logger.warning(f"[Voice] Verbal filler send warning: {e}")

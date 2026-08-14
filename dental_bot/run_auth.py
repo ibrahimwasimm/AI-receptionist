@@ -104,14 +104,24 @@ try:
     SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
     creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    if os.path.exists(TOKEN_PATH) and os.path.getsize(TOKEN_PATH) > 0:
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        except Exception:
+            creds = None
 
     if not creds or not creds.valid:
+        refreshed = False
         if creds and creds.expired and creds.refresh_token:
-            print("  [INFO] Refreshing expired token...")
-            creds.refresh(Request())
-        else:
+            print("  [INFO] Attempting to refresh token...")
+            try:
+                creds.refresh(Request())
+                refreshed = True
+            except Exception as err:
+                print(f"  [WARNING] Token refresh failed ({err}). Opening browser for fresh authorization...")
+                creds = None
+
+        if not refreshed or not creds:
             print("  [INFO] Opening browser for Google Calendar authorization...")
             print("         Log in with your Google account and grant access.")
             flow = InstalledAppFlow.from_client_secrets_file(CREDS_PATH, SCOPES)
