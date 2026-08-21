@@ -147,8 +147,7 @@ async def media_stream(websocket: WebSocket):
                                 "time_str"
                             ]
                         )
-                    ),
-                    types.FunctionDeclaration(
+                    ),                    types.FunctionDeclaration(
                         name="transfer_to_doctor",
                         description="Transfer call to doctor for consultation or emergency",
                         parameters=types.Schema(
@@ -165,6 +164,15 @@ async def media_stream(websocket: WebSocket):
                             },
                             required=["doctor"]
                         )
+                    ),
+                    types.FunctionDeclaration(
+                        name="send_location_whatsapp",
+                        description="Send clinic Google Maps location link via WhatsApp to the caller",
+                        parameters=types.Schema(
+                            type="OBJECT",
+                            properties={},
+                            required=[]
+                        )
                     )
                 ]
             )
@@ -179,10 +187,17 @@ Jab call connect ho, FORAN yeh bolein (Urdu mein):
 "Assalam u Alaikum! mein sana baat krhi  {CLINIC_NAME} . Aap ki kya madad kar sakti hoon?"
 
 ════ CLINIC INFO ════
-Timings : Monday to Saturday, sham 5 baje se raat 10 baje tak
-Closed  : Sunday
-Doctors : Dr. Mustafa aur Dr. Qasim
-Fees    : Consultation par bata denge
+Timings  : Monday to Saturday, sham 6 baje se raat 10 baje tak
+Closed   : Sunday
+Doctors  : Dr. Mustafa aur Dr. Qasim
+Fees     : Consultation par bata denge
+Address  : Grey Skyline, Block 13, Jauhar Chowrangi Road, Gulistan-e-Johar, Karachi (Near Jauhar Chowrangi)
+Map Link : https://maps.app.goo.gl/7NfZMQEBh1HTo5bw8
+
+════ LOCATION & DIRECTIONS GUIDE ════
+Agar patient location, address ya rasta poochay, FORAN yeh bolein:
+"786 Medical Store se jo andar road ja rahi hai, us road par seedha andar Hussaini Blood Bank hai, wahan hi clinic hai. Main aap ko WhatsApp par location link bhi bhej deti hoon."
+Phir FORAN send_location_whatsapp tool call karke patient ke WhatsApp par Google Maps link bhej do.
 
 ════ AVAILABLE SLOTS ════
 {slots_text}
@@ -192,16 +207,15 @@ Fees    : Consultation par bata denge
 2. get_available_slots tool call karo
 3. Patient ko max 3 slots batao
 4. Patient jo slot choose kare confirm karo
-5. Naam pucho
+5. Naam pucho (Note: Phone number ask karne ki zaroorat nahi hai, network se auto-detect hota hai)
 6. book_appointment call karo
 7. Warmly Urdu mein confirm karo
 
 ════ CANCELLATION ════
-1. Phone number pucho
-2. Date pucho
-3. Time pucho
-4. cancel_appointment call karo
-5. Urdu mein confirm karo
+1. Date pucho
+2. Time pucho
+3. cancel_appointment call karo
+4. Urdu mein confirm karo
 
 ════ EMERGENCY ════
 Agar severe pain, swelling, bleeding ya broken tooth ho:
@@ -210,6 +224,9 @@ Foran transfer_to_doctor emergency call karo.
 ════ DOCTOR TRANSFER ════
 Agar patient doctor se milna chahe:
 Pucho: "Dr. Mustafa ya Dr. Qasim?"
+Phir transfer_to_doctor call karo.
+
+════ FEMALE GENDER GRAMMAR RULE (STRICT CRITICAL) ════stafa ya Dr. Qasim?"
 Phir transfer_to_doctor call karo.
 
 ════ FEMALE GENDER GRAMMAR RULE (STRICT CRITICAL) ════
@@ -572,7 +589,7 @@ async def _handle_tool(
                 twiml_transfer = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Aditi" language="en-IN">Please hold while I transfer your call to {doctor_name}.</Say>
-  <Dial callerId="{dest_number}">
+  <Dial>
     <Number>{dest_number}</Number>
   </Dial>
 </Response>"""
@@ -586,5 +603,22 @@ async def _handle_tool(
                 return f"Transfer failed: {e}"
 
         return f"Could not transfer — phone number for {doctor_name} is missing."
+
+    elif name == "send_location_whatsapp":
+        try:
+            caller_phone = state.get("caller_number", "")
+            if caller_phone and caller_phone != "unknown":
+                from whatsapp_handler import send_whatsapp_message
+                msg_text = (
+                    f"📍 *{CLINIC_NAME} Location*\n\n"
+                    f"🏢 *Address*: Grey Skyline, Block 13, Jauhar Chowrangi Road, Gulistan-e-Johar, Karachi (Near Jauhar Chowrangi)\n"
+                    f"🗺️ *Google Maps*: https://maps.app.goo.gl/7NfZMQEBh1HTo5bw8"
+                )
+                await send_whatsapp_message(caller_phone, msg_text)
+                return "Location link sent successfully via WhatsApp!"
+            return "Could not send WhatsApp location link because caller phone number was unknown."
+        except Exception as e:
+            logger.error(f"[Tool] send_location_whatsapp error: {e}")
+            return f"Failed to send location via WhatsApp: {e}"
 
     return "Unknown tool called."
