@@ -40,7 +40,10 @@ def notify_doctor(patient_name: str, patient_phone: str, date_str: str, time_str
     """Sends an instant WhatsApp notification to the Doctor."""
     token = os.getenv("META_ACCESS_TOKEN")
     phone_id = os.getenv("META_PHONE_NUMBER_ID")
-    doctor_phone = os.getenv("DOCTOR_PHONE_NUMBER", "923202042302")  # Using your testing number
+    doctor_phone = os.getenv("DOCTOR_PHONE_NUMBER", "")
+    if not doctor_phone:
+        print("[Doctor Notification] DOCTOR_PHONE_NUMBER not set in .env — skipping WhatsApp alert.")
+        return
     
     message = f"🔔 *NEW BOOKING ALERT* 🔔\n\n*Patient:* {patient_name}\n*Phone:* {patient_phone}\n*Date:* {date_str}\n*Time:* {time_str}\n\n✅ This has been automatically added to your Google Calendar."
     
