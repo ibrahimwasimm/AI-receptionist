@@ -1,4 +1,3 @@
-from openai import OpenAI
 import re
 import os
 from dotenv import load_dotenv
@@ -7,11 +6,11 @@ load_dotenv(override=True)
 from database import supabase
 import gcal
 import httpx
+from google import genai
+from google.genai import types
 
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.getenv("OPENROUTER_API_KEY") or "sk-or-v1-placeholder",
-)
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
 
 CLINIC_NAME = os.getenv("CLINIC_NAME", "Smile Dental Clinic")
 
@@ -224,13 +223,6 @@ IMPORTANT: These tags are parsed by the system. They must appear on their own li
 at the very end of your message. Never explain or mention them to the patient."""
 
 
-# ── Gemini Client Setup ──────────────────────────────────────────────────────
-from google import genai
-from google.genai import types
-
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-gemini_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
-
 GEMINI_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.7-flash",
@@ -238,77 +230,37 @@ GEMINI_MODELS = [
     "gemini-flash-latest"
 ]
 
-OPENROUTER_MODELS = [
-    "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "liquid/lfm-2.5-2.6b:free",
-    "openrouter/free"
-]
-
-import time
-import datetime
-import threading
-
-CURRENT_MODEL_INDEX = 0
-LAST_RESET_TIME = datetime.datetime.now()
-model_lock = threading.Lock()
-
 def get_chat_completion(system_prompt: str, conversation_history: list) -> str:
-    # 1. Try Google Gemini first (Fastest & most reliable)
-    if gemini_client:
-        for g_model in GEMINI_MODELS:
-            try:
-                # Format conversation history for Gemini
-                contents = []
-                for turn in conversation_history:
-                    role = "user" if turn["role"] == "user" else "model"
-                    contents.append(types.Content(
-                        role=role,
-                        parts=[types.Part.from_text(text=turn["content"])]
-                    ))
-                
-                config = types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.7,
-                )
-                
-                resp = gemini_client.models.generate_content(
-                    model=g_model,
-                    contents=contents,
-                    config=config
-                )
-                if resp.text:
-                    return resp.text.strip()
-            except Exception as e:
-                print(f"[Gemini] Model {g_model} failed: {e}. Trying fallback...")
+    """Generate response using Google Gemini API exclusively."""
+    if not gemini_client:
+        print("[Gemini] ERROR: GEMINI_API_KEY is not configured.")
+        return "Assalam o Alaikum! Our system is currently being updated. A clinic representative will assist you shortly."
 
-    # 2. Fallback to OpenRouter
-    global CURRENT_MODEL_INDEX, LAST_RESET_TIME
-    messages = [{"role": "system", "content": system_prompt}] + conversation_history
-    
-    attempts = 0
-    while attempts < len(OPENROUTER_MODELS):
-        now = datetime.datetime.now()
-        with model_lock:
-            if (now - LAST_RESET_TIME).total_seconds() > 3600:
-                CURRENT_MODEL_INDEX = 0
-                LAST_RESET_TIME = now
-            safe_index = CURRENT_MODEL_INDEX % len(OPENROUTER_MODELS)
-            current_model = OPENROUTER_MODELS[safe_index]
+    # Format multi-turn conversation history for Gemini
+    contents = []
+    for turn in conversation_history:
+        role = "user" if turn["role"] == "user" else "model"
+        contents.append(types.Content(
+            role=role,
+            parts=[types.Part.from_text(text=turn["content"])]
+        ))
 
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.7,
+    )
+
+    for g_model in GEMINI_MODELS:
         try:
-            print(f"[Agent] Trying OpenRouter model: {current_model}")
-            response = client.chat.completions.create(
-                model=current_model,
-                messages=messages,
-                timeout=12.0
+            resp = gemini_client.models.generate_content(
+                model=g_model,
+                contents=contents,
+                config=config
             )
-            return response.choices[0].message.content
+            if resp.text:
+                return resp.text.strip()
         except Exception as e:
-            print(f"[OpenRouter Error] {current_model} failed: {e}")
-            with model_lock:
-                CURRENT_MODEL_INDEX = (CURRENT_MODEL_INDEX + 1) % len(OPENROUTER_MODELS)
-            attempts += 1
+            print(f"[Gemini] Model {g_model} failed: {e}. Trying next Gemini model...")
 
     return "Assalam o Alaikum! We are currently experiencing a brief technical delay. A clinic representative will assist you shortly."
 
