@@ -1,18 +1,25 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, WebSocket
-from fastapi.responses import Response
-from fastapi import BackgroundTasks
+from fastapi import FastAPI, Request, WebSocket, BackgroundTasks
+from fastapi.responses import Response, JSONResponse
 from dotenv import load_dotenv
 load_dotenv()
 
 from reminders import reminder_loop
 from whatsapp_handler import verify_webhook, whatsapp_webhook
-from twilio_gemini_handler import voice_webhook, media_stream
+
+# Optional voice handler (gracefully disabled in messaging-only mode)
+try:
+    from twilio_gemini_handler import voice_webhook, media_stream
+    VOICE_AVAILABLE = True
+except Exception as e:
+    print(f"[Server] Running in Messaging-Only mode (Voice handler skipped: {e})")
+    VOICE_AVAILABLE = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start automated WhatsApp appointment reminder background scheduler
     task = asyncio.create_task(reminder_loop())
     yield
     task.cancel()
@@ -22,16 +29,24 @@ async def lifespan(app: FastAPI):
         pass
 
 app = FastAPI(
-    title="Dental Clinic AI Bot — WhatsApp + Voice",
+    title="Dental Clinic AI Receptionist — WhatsApp Messaging",
+    description="Automated AI receptionist for patient inquiries, appointments, and reminders on WhatsApp.",
     lifespan=lifespan
 )
-
 
 @app.get("/")
 def root():
     return {
-        "status": "Dental bot is running ✅",
-        "channels": "WhatsApp + Voice"
+        "status": "Dental Clinic AI Receptionist is running ✅",
+        "channel": "WhatsApp Cloud API",
+        "features": [
+            "AI Patient Inquiries & FAQs",
+            "Real-time Google Calendar Booking & Rescheduling",
+            "Supabase Patient Records Sync",
+            "Instant Doctor WhatsApp Alerts",
+            "Automated Daily Appointment Reminders"
+        ],
+        "voice_calling_enabled": VOICE_AVAILABLE
     }
 
 @app.get("/webhook/whatsapp")
@@ -45,11 +60,18 @@ async def webhook_receive(
 ) -> Response:
     return await whatsapp_webhook(request, background_tasks)
 
+# Optional voice endpoints (kept dormant or fallback if voice called)
 @app.post("/webhook/voice")
 @app.post("/voice")
 async def twilio_voice(request: Request) -> Response:
-    return await voice_webhook(request)
+    if VOICE_AVAILABLE:
+        return await voice_webhook(request)
+    return Response(content="<Response><Say>Voice calling is currently disabled. Please contact us on WhatsApp.</Say></Response>", media_type="application/xml")
 
 @app.websocket("/media-stream")
 async def websocket_endpoint(websocket: WebSocket):
-    await media_stream(websocket)
+    if VOICE_AVAILABLE:
+        await media_stream(websocket)
+    else:
+        await websocket.close()
+

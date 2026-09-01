@@ -23,19 +23,20 @@ async def verify_webhook(request: Request) -> Response:
     Meta calls this GET endpoint once when you register the webhook in the
     Meta Developer Console. It passes three query params:
       hub.mode         → always "subscribe"
-      hub.verify_token → must match META_VERIFY_TOKEN in your .env
+      hub.verify_token → must match META_VERIFY_TOKEN or VERIFY_TOKEN in .env
       hub.challenge    → random string we must echo back to confirm
     """
     params        = dict(request.query_params)
     mode          = params.get("hub.mode")
     token         = params.get("hub.verify_token")
     challenge     = params.get("hub.challenge")
+    expected_token = os.getenv("META_VERIFY_TOKEN") or os.getenv("VERIFY_TOKEN") or "clinicdentalagent"
 
-    if mode == "subscribe" and token == META_VERIFY_TOKEN:
+    if mode == "subscribe" and token == expected_token:
         print("[Webhook] OK Verification successful.")
         return Response(content=challenge, media_type="text/plain")
 
-    print("[Webhook] FAILED Verification failed - token mismatch.")
+    print(f"[Webhook] FAILED Verification failed - token mismatch (received '{token}', expected '{expected_token}').")
     return Response(content="Forbidden", status_code=403)
 
 

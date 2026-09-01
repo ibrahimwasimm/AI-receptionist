@@ -201,7 +201,7 @@ BEHAVIOR RULES (STRICTLY FOLLOW THESE)
 
 7. OUT-OF-SCOPE  : If asked about something unrelated to the clinic or dentistry,
                    politely say "I can only help with clinic appointments and dental
-                   info. For anything else, please call us directly."
+                   info. For any other inquiries, please leave a message here and our staff will assist you."
 
 8. EMERGENCIES   : If patient mentions severe pain, swelling, or trauma, prioritize
                    them. Say "This sounds urgent — we can see you today or tomorrow.
@@ -224,13 +224,25 @@ IMPORTANT: These tags are parsed by the system. They must appear on their own li
 at the very end of your message. Never explain or mention them to the patient."""
 
 
-MODELS = [
-    "inclusionai/ring-2.6-1t:free",
-    "meta-llama/llama-3-8b-instruct:free",
-    "mistralai/mistral-7b-instruct:free",
-    "google/gemma-2-9b-it:free",
-    "qwen/qwen-2-7b-instruct:free",
-    "microsoft/phi-3-mini-128k-instruct:free"
+# ── Gemini Client Setup ──────────────────────────────────────────────────────
+from google import genai
+from google.genai import types
+
+gemini_api_key = os.getenv("GEMINI_API_KEY")
+gemini_client = genai.Client(api_key=gemini_api_key) if gemini_api_key else None
+
+GEMINI_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-flash-latest"
+]
+
+OPENROUTER_MODELS = [
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "openrouter/free"
 ]
 
 import time
@@ -241,47 +253,65 @@ CURRENT_MODEL_INDEX = 0
 LAST_RESET_TIME = datetime.datetime.now()
 model_lock = threading.Lock()
 
-def get_chat_completion(messages: list) -> str:
+def get_chat_completion(system_prompt: str, conversation_history: list) -> str:
+    # 1. Try Google Gemini first (Fastest & most reliable)
+    if gemini_client:
+        for g_model in GEMINI_MODELS:
+            try:
+                # Format conversation history for Gemini
+                contents = []
+                for turn in conversation_history:
+                    role = "user" if turn["role"] == "user" else "model"
+                    contents.append(types.Content(
+                        role=role,
+                        parts=[types.Part.from_text(text=turn["content"])]
+                    ))
+                
+                config = types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                )
+                
+                resp = gemini_client.models.generate_content(
+                    model=g_model,
+                    contents=contents,
+                    config=config
+                )
+                if resp.text:
+                    return resp.text.strip()
+            except Exception as e:
+                print(f"[Gemini] Model {g_model} failed: {e}. Trying fallback...")
+
+    # 2. Fallback to OpenRouter
     global CURRENT_MODEL_INDEX, LAST_RESET_TIME
+    messages = [{"role": "system", "content": system_prompt}] + conversation_history
     
     attempts = 0
-    while attempts < len(MODELS) * 2:  # Prevent infinite loops
-        # Reset tracker if 60 minutes have passed
+    while attempts < len(OPENROUTER_MODELS):
         now = datetime.datetime.now()
         with model_lock:
             if (now - LAST_RESET_TIME).total_seconds() > 3600:
                 CURRENT_MODEL_INDEX = 0
                 LAST_RESET_TIME = now
-            
-            # Safely get the index so it never crashes
-            safe_index = CURRENT_MODEL_INDEX % len(MODELS)
-            current_model = MODELS[safe_index]
+            safe_index = CURRENT_MODEL_INDEX % len(OPENROUTER_MODELS)
+            current_model = OPENROUTER_MODELS[safe_index]
 
         try:
-            print(f"[Agent] Trying model: {current_model}")
+            print(f"[Agent] Trying OpenRouter model: {current_model}")
             response = client.chat.completions.create(
                 model=current_model,
                 messages=messages,
-                timeout=10.0
+                timeout=12.0
             )
             return response.choices[0].message.content
         except Exception as e:
-            error_str = str(e).lower()
-            print(f"[OpenRouter Error] Model {current_model} failed: {error_str}")
-            
+            print(f"[OpenRouter Error] {current_model} failed: {e}")
             with model_lock:
-                # Move to next model
-                CURRENT_MODEL_INDEX = (CURRENT_MODEL_INDEX + 1) % len(MODELS)
-                
+                CURRENT_MODEL_INDEX = (CURRENT_MODEL_INDEX + 1) % len(OPENROUTER_MODELS)
             attempts += 1
-            
-            # If we've tried all models in the list once, wait 60 seconds
-            if attempts % len(MODELS) == 0:
-                print("[Agent] All models failed. Waiting 30s in background before retrying...")
-                time.sleep(30)
-            continue
-            
-    return "I am sorry, our system is currently offline due to high traffic. We will get back to you shortly."
+
+    return "Assalam o Alaikum! We are currently experiencing a brief technical delay. A clinic representative will assist you shortly."
+
 
 def handle_message(phone: str, incoming_message: str, patient_name: str = "Unknown Patient") -> str:
     """Main entry point. Takes the patient's phone + message, returns reply text."""
@@ -302,12 +332,9 @@ def handle_message(phone: str, incoming_message: str, patient_name: str = "Unkno
     # Append the newest user message
     CONVERSATION_HISTORY[phone].append({"role": "user", "content": incoming_message})
 
-    # Build standard OpenAI messages array
-    messages = [{"role": "system", "content": build_system_prompt(patient, open_slots, phone)}]
-    messages.extend(CONVERSATION_HISTORY[phone])
-
-    # Send the entire recent history to OpenRouter using our intelligent router
-    reply = get_chat_completion(messages)
+    # Build system prompt and fetch completion
+    system_prompt = build_system_prompt(patient, open_slots, phone)
+    reply = get_chat_completion(system_prompt, CONVERSATION_HISTORY[phone])
 
     # ── Parse and act on BOOK tag ────────────────────────────────────────────
     book_match = re.search(r"BOOK:(\d{4}-\d{2}-\d{2}):(\d{2}:\d{2})(?::(.+))?", reply)
