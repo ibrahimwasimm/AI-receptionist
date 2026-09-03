@@ -136,6 +136,15 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks) 
         msg_type     = msg.get("type", "text")
         text         = ""
 
+        # Instantly deduplicate: if Meta sends duplicate webhook retries, drop them immediately
+        if msg_id in PROCESSED_MESSAGE_IDS:
+            print(f"[Webhook] Duplicate message ID {msg_id} dropped at webhook entrypoint.")
+            return Response(content="ok", status_code=200)
+        PROCESSED_MESSAGE_IDS.add(msg_id)
+
+        if len(PROCESSED_MESSAGE_IDS) > 2000:
+            PROCESSED_MESSAGE_IDS.clear()
+
         # Extract patient's WhatsApp name
         sender_name = "Unknown Patient"
         if "contacts" in value and len(value["contacts"]) > 0:

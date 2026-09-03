@@ -45,28 +45,51 @@ from datetime import datetime
 DOCTOR_WHATSAPP_NUMBER = os.getenv("DOCTOR_WHATSAPP_NUMBER", "923311286436")
 
 # Lookup mapping doctor_id -> WhatsApp configuration
-# When ready for Dr. Musafer and Dr. Kassa, update phone numbers here or in .env
 DOCTOR_REGISTRY = {
     "default": {
         "name": "Dr. on Duty",
         "whatsapp_number": DOCTOR_WHATSAPP_NUMBER,
     },
-    "dr_musafer": {
-        "name": "Dr. Musafer",
-        "whatsapp_number": os.getenv("DR_MUSAFER_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
+    "dr_mustafa": {
+        "name": "Dr. Mustafa",
+        "whatsapp_number": os.getenv("DR_MUSTAFA_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
     },
-    "dr_kassa": {
-        "name": "Dr. Kassa",
-        "whatsapp_number": os.getenv("DR_KASSA_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
+    "dr_qasim": {
+        "name": "Dr. Qasim",
+        "whatsapp_number": os.getenv("DR_QASIM_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
     },
 }
+
+# In-memory deduplication set to guarantee exactly ONE notification per booking
+NOTIFIED_BOOKINGS = set()
+RECENTLY_BOOKED_SLOTS = set()
 
 
 def send_doctor_notification(booking: dict) -> bool:
     """
     Sends an instant WhatsApp notification to the assigned doctor right after
     a booking is successfully created in Supabase.
+    Exact format required:
+    "New Appointment: [Patient Name], [Phone Number], [Date], [Time], [Procedure]"
     """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    appointment_id = booking.get("appointment_id", "N/A")
+    patient_name = booking.get("patient_name", "Unknown Patient")
+    patient_phone = booking.get("patient_phone", "")
+    date_str = booking.get("date_str", "")
+    time_str = booking.get("time_str", "")
+    procedure = booking.get("procedure", "Dental Consultation")
+
+    # Deduplication key: ensure this booking only fires one notification
+    dedup_key = f"{patient_phone}_{date_str}_{time_str}"
+    if appointment_id != "N/A":
+        dedup_key = f"appt_{appointment_id}"
+
+    if dedup_key in NOTIFIED_BOOKINGS:
+        print(f"[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] DUPLICATE DETECTED: Notification already sent for {dedup_key}. Dropping duplicate.")
+        return True
+    NOTIFIED_BOOKINGS.add(dedup_key)
+
     doctor_id = booking.get("doctor_id", "default")
     doctor_info = DOCTOR_REGISTRY.get(doctor_id, DOCTOR_REGISTRY["default"])
     doctor_name = doctor_info["name"]
@@ -76,27 +99,11 @@ def send_doctor_notification(booking: dict) -> bool:
     phone_id = os.getenv("META_PHONE_NUMBER_ID")
 
     if not token or not phone_id:
-        print("[Doctor Notification] META credentials missing in .env — skipping doctor alert.")
+        print(f"[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] META credentials missing in .env — skipping doctor alert.")
         return False
 
-    patient_name = booking.get("patient_name", "Unknown Patient")
-    patient_phone = booking.get("patient_phone", "")
-    date_str = booking.get("date_str", "")
-    time_str = booking.get("time_str", "")
-    procedure = booking.get("procedure", "Dental Consultation")
-    notes = booking.get("notes") or "Booked via WhatsApp AI Receptionist"
-
-    message = (
-        f"🔔 *NEW BOOKING ALERT* 🔔\n\n"
-        f"👨‍⚕️ *Doctor:* {doctor_name}\n"
-        f"👤 *Patient:* {patient_name}\n"
-        f"📞 *Phone:* +{patient_phone}\n"
-        f"📅 *Date:* {date_str}\n"
-        f"⏰ *Time:* {time_str}\n"
-        f"🦷 *Procedure:* {procedure}\n"
-        f"📝 *Notes:* {notes}\n\n"
-        f"✅ *Status:* Automatically recorded in Google Calendar & Supabase."
-    )
+    # Exact format: "New Appointment: [Patient Name], [Phone Number], [Date], [Time], [Procedure]"
+    message = f"New Appointment: {patient_name}, {patient_phone}, {date_str}, {time_str}, {procedure}"
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -110,8 +117,7 @@ def send_doctor_notification(booking: dict) -> bool:
         "text": {"body": message}
     }
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n[Doctor Notification] [{timestamp}] Sending alert to {doctor_name} ({doctor_phone})")
+    print(f"\n[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] Triggered send_doctor_notification for {patient_name} ({patient_phone}) at {date_str} {time_str}")
     print(f"[Doctor Notification] Outgoing Payload:\n{json.dumps(payload, indent=2)}")
 
     try:
@@ -119,13 +125,13 @@ def send_doctor_notification(booking: dict) -> bool:
         resp = httpx.post(url, headers=headers, json=payload, timeout=12.0)
         if resp.status_code == 200:
             msg_id = resp.json().get("messages", [{}])[0].get("id", "OK")
-            print(f"[Doctor Notification] [{timestamp}] ✅ Sent successfully to {doctor_phone} (Message ID: {msg_id})")
+            print(f"[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] ✅ Sent single alert to {doctor_phone} (Message ID: {msg_id})")
             return True
         else:
-            print(f"[Doctor Notification] [{timestamp}] ❌ Meta API Error {resp.status_code}: {resp.text}")
+            print(f"[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] ❌ Meta API Error {resp.status_code}: {resp.text}")
             return False
     except Exception as e:
-        print(f"[Doctor Notification] [{timestamp}] ❌ Failed: {e}")
+        print(f"[Doctor Notification] [{timestamp}] [Booking ID: {appointment_id}] ❌ Failed: {e}")
         return False
 
 
@@ -163,13 +169,16 @@ def build_system_prompt(patient: dict | None, open_slots: list[str], phone: str)
 
     return f"""You are Sana, a warm and professional dental receptionist at {CLINIC_NAME}.
 You assist patients via WhatsApp — booking, rescheduling, or canceling appointments,
-answering questions about procedures and fees, and providing general clinic information.
+answering questions about procedures, and providing general clinic information.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CLINIC INFORMATION
+CLINIC INFORMATION & DOCTORS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Clinic Name    : {CLINIC_NAME}
-Working Hours  : Monday to Saturday, 5:00 PM – 10:00 PM
+Doctors        : We have two doctors at the clinic — Dr. Mustafa and Dr. Qasim — both senior, qualified dental doctors.
+                 If a patient asks about the doctors (e.g. "who are the doctors", "which doctor should I see", "tell me about your doctors"),
+                 always respond with: "We have two doctors at the clinic — Dr. Mustafa and Dr. Qasim — both senior, qualified dental doctors."
+Working Hours  : Monday to Saturday, 5:00 PM – 10:00 PM (45-minute slots: 5:00–5:45 PM, 5:45–6:30 PM, 6:30–7:15 PM, 7:15–8:00 PM, 8:00–8:45 PM, 8:45–9:30 PM)
 Off Days       : Sunday (closed)
 Location       : Grey Skyline, Block 13, Jauhar Chowrangi Road, Gulistan-e-Johar, Karachi (786 Medical Store se jo andar road ja rahi hai, us road par seedha andar Hussaini Blood Bank hai, wahan hi clinic hai). Google Maps: https://maps.app.goo.gl/7NfZMQEBh1HTo5bw8
 Language       : Respond in the same language the patient uses.
@@ -205,7 +214,7 @@ PATIENT CONTEXT
 {patient_ctx}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AVAILABLE APPOINTMENT SLOTS THIS WEEK
+AVAILABLE APPOINTMENT SLOTS THIS WEEK (45-MIN SLOTS)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {slots_text}
 
@@ -219,26 +228,39 @@ BEHAVIOR RULES (STRICTLY FOLLOW THESE)
                    No long paragraphs. Use line breaks for clarity.
                    Use emojis sparingly (1–2 max) to stay friendly.
 
-3. BOOKING FLOW  :
+3. STRICT SCOPE BOUNDARY (CRITICAL RULE):
+   You are exclusively a dental clinic receptionist. You can ONLY answer questions about:
+   - The clinic, our doctors (Dr. Mustafa and Dr. Qasim), clinic hours, location/directions.
+   - Dental appointments (booking, canceling, rescheduling).
+   - Our 6 dental procedures and general oral/dental health hygiene.
+
+   You must NEVER answer any off-topic questions under any circumstances:
+   - NO coding, programming, software, or technical questions (e.g. Python, JS, HTML).
+   - NO general trivia, history, movies, sports, politics, weather, recipes, or news.
+   - NO general non-dental medical advice (e.g. fever, headache, heart conditions, diabetes, flu).
+   - NO math problems, homework help, translations, or creative writing.
+
+   If the user asks ANY question outside clinic/dental scope, you MUST refuse immediately:
+   "That's outside what I can help with — I can only answer questions about the clinic, our doctors, appointments, and dental care."
+   (If asked in Urdu/Roman Urdu: "Yeh mere dairey se bahar hai — main sirf clinic, hamare doctors, appointments aur daanton ki dekhbhal se mutalliq sawalat ke jawabat de sakti hoon.")
+   Do NOT attempt to answer or give any part of an off-topic answer before declining.
+
+4. BOOKING FLOW  :
    Step 1 → Ask what procedure/issue the patient needs help with.
-   Step 2 → Share available slots (already listed above).
+   Step 2 → Share available 45-minute slots (listed above).
    Step 3 → Ask the patient to confirm a specific slot.
    Step 4 → Confirm the booking warmly.
    → Once confirmed, add the hidden BOOK tag (see below). Never show the tag.
 
-4. RESCHEDULING  : Ask which appointment they want to change, cancel the old one
+5. RESCHEDULING  : Ask which appointment they want to change, cancel the old one
                    (CANCEL tag), then help them pick a new slot (BOOK tag).
 
-5. NEW PATIENTS  : If no patient record exists, warmly introduce yourself, ask for
+6. NEW PATIENTS  : If no patient record exists, warmly introduce yourself, ask for
                    their name, then proceed with booking.
 
-6. PROCEDURE INFO: If a patient asks about a procedure or cost, give a brief
+7. PROCEDURE INFO: If a patient asks about a procedure or cost, give a brief
                    friendly summary using the procedure list above.
                    Always say "exact fees are confirmed at your consultation".
-
-7. OUT-OF-SCOPE  : If asked about something unrelated to the clinic or dentistry,
-                   politely say "I can only help with clinic appointments and dental
-                   info. For any other inquiries, please leave a message here and our staff will assist you."
 
 8. EMERGENCIES   : If patient mentions severe pain, swelling, or trauma, prioritize
                    them. Say "This sounds urgent — we can see you today or tomorrow.
@@ -251,11 +273,12 @@ SYSTEM TAGS (HIDDEN — NEVER SHOW TO PATIENT)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 BOOKING TAG    : When a patient confirms a slot, append on a new line at the very end:
                  BOOK:YYYY-MM-DD:HH:MM:Procedure Name
-                 Example: BOOK:2025-04-20:17:00:Root Canal
+                 Example: BOOK:2026-09-04:17:45:Oral Cleaning (Scaling)
+                 Note: Slots start at 45-min intervals: 17:00, 17:45, 18:30, 19:15, 20:00, 20:45.
 
 CANCELLATION TAG: When a patient cancels an appointment, append on a new line:
                  CANCEL:YYYY-MM-DD:HH:MM
-                 Example: CANCEL:2025-04-20:17:00
+                 Example: CANCEL:2026-09-04:17:45
 
 IMPORTANT: These tags are parsed by the system. They must appear on their own line
 at the very end of your message. Never explain or mention them to the patient."""
@@ -383,51 +406,61 @@ def handle_message(phone: str, incoming_message: str, patient_name: str = "Unkno
     if book_match and patient:
         date_str, time_str = book_match.group(1), book_match.group(2)
         procedure_name = book_match.group(3).strip() if book_match.group(3) else "Dental Appointment"
-        success = gcal.create_booking(
-            patient_name=patient["name"],
-            phone=phone,
-            date_str=date_str,
-            time_str=time_str,
-            procedure=procedure_name,
-        )
+        slot_key = (phone, date_str, time_str)
         reply = reply[: book_match.start()].strip()
-        if not success:
-            reply += "\n\nSorry, that slot was just taken. Please choose another time."
+
+        # Guard against duplicate bookings caused by webhook retries or repeat confirmation turns
+        if slot_key in RECENTLY_BOOKED_SLOTS:
+            print(f"[Booking Flow] Slot {date_str} {time_str} already confirmed for {phone}. Skipping duplicate actions.")
         else:
-            if not reply:
-                reply = f"Perfect! Your appointment for {date_str} at {time_str} is confirmed. We look forward to seeing you!"
-
-            # 1. Save the appointment to Supabase
-            from datetime import datetime
-            from zoneinfo import ZoneInfo
-            slot_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Karachi"))
-            
-            # Assigned doctor (defaults to 'default' test number; extensible per procedure or doctor selection)
-            assigned_doctor_id = "default"
-
-            supabase_res = supabase.table("appointments").insert({
-                "patient_phone": phone,
-                "patient_name": patient["name"],
-                "procedure": procedure_name,
-                "slot_time": slot_time.isoformat(),
-                "booked": True
-            }).execute()
-
-            # 2. Right after the Supabase write succeeds, send a dedicated WhatsApp notification to the Doctor
-            if supabase_res.data:
-                booking_record = {
-                    "patient_name": patient["name"],
-                    "patient_phone": phone,
-                    "date_str": date_str,
-                    "time_str": time_str,
-                    "procedure": procedure_name,
-                    "doctor_id": assigned_doctor_id,
-                    "notes": patient.get("notes") or "Booked via WhatsApp AI Receptionist",
-                    "appointment_id": supabase_res.data[0].get("id")
-                }
-                send_doctor_notification(booking_record)
+            success = gcal.create_booking(
+                patient_name=patient["name"],
+                phone=phone,
+                date_str=date_str,
+                time_str=time_str,
+                procedure=procedure_name,
+            )
+            if not success:
+                reply += "\n\nSorry, that slot was just taken. Please choose another time."
             else:
-                print(f"[Booking Flow] Warning: Supabase insert returned no data for patient {patient['name']}. Doctor alert skipped.")
+                RECENTLY_BOOKED_SLOTS.add(slot_key)
+                if len(RECENTLY_BOOKED_SLOTS) > 500:
+                    RECENTLY_BOOKED_SLOTS.clear()
+
+                if not reply:
+                    reply = f"Perfect! Your appointment for {date_str} at {time_str} is confirmed. We look forward to seeing you!"
+
+                # 1. Save the appointment to Supabase
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                slot_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Karachi"))
+                
+                # Assigned doctor (defaults to 'default' test number; extensible per procedure or doctor selection)
+                assigned_doctor_id = "default"
+
+                supabase_res = supabase.table("appointments").insert({
+                    "patient_phone": phone,
+                    "patient_name": patient["name"],
+                    "procedure": procedure_name,
+                    "slot_time": slot_time.isoformat(),
+                    "booked": True
+                }).execute()
+
+                # 2. Right after the Supabase write succeeds, send a dedicated WhatsApp notification to the Doctor
+                if supabase_res.data:
+                    booking_record = {
+                        "patient_name": patient["name"],
+                        "patient_phone": phone,
+                        "date_str": date_str,
+                        "time_str": time_str,
+                        "procedure": procedure_name,
+                        "doctor_id": assigned_doctor_id,
+                        "notes": patient.get("notes") or "Booked via WhatsApp AI Receptionist",
+                        "appointment_id": supabase_res.data[0].get("id")
+                    }
+                    send_doctor_notification(booking_record)
+                else:
+                    print(f"[Booking Flow] Warning: Supabase insert returned no data for patient {patient['name']}. Doctor alert skipped.")
 
     # ── Parse and act on CANCEL tag ──────────────────────────────────────────
     cancel_match = re.search(r"CANCEL:(\d{4}-\d{2}-\d{2}):(\d{2}:\d{2})", reply)
