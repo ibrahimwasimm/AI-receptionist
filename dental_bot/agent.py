@@ -304,10 +304,45 @@ def get_chat_completion(system_prompt: str, conversation_history: list) -> str:
 
 
 def handle_message(phone: str, incoming_message: str, patient_name: str = "Unknown Patient") -> str:
-    """Main entry point. Takes the patient's phone + message, returns reply text."""
+    """Main entry point. Takes the sender's phone + message, returns reply text."""
+    # ── 1. Check if the sender is a Doctor ──────────────────────────────────
+    is_doctor = False
+    doc_display_name = "Doctor"
+    for doc_id, doc_data in DOCTOR_REGISTRY.items():
+        if phone == doc_data.get("whatsapp_number"):
+            is_doctor = True
+            doc_display_name = doc_data.get("name", "Doctor")
+            break
+
+    if is_doctor:
+        print(f"[Doctor Session] Recognized {doc_display_name} ({phone})")
+        # Fetch today and upcoming appointments from Supabase
+        from datetime import date
+        today_str = date.today().isoformat()
+        try:
+            appts = supabase.table("appointments").select("*").gte("slot_time", today_str).eq("booked", True).order("slot_time").limit(5).execute()
+            if appts.data:
+                appt_lines = "\n".join([
+                    f"• *{a.get('patient_name', 'Patient')}* — {a.get('procedure', 'Dental Visit')} at {a.get('slot_time', '')[:16].replace('T', ' ')}"
+                    for a in appts.data
+                ])
+            else:
+                appt_lines = "No upcoming appointments scheduled yet."
+        except Exception as e:
+            appt_lines = f"Schedule lookup error: {e}"
+
+        return (
+            f"Assalam o Alaikum {doc_display_name}! 👨‍⚕️\n\n"
+            f"You are connected to *{CLINIC_NAME}*'s AI Receptionist.\n"
+            f"Whenever a patient books an appointment, you will receive real-time alerts on this chat.\n\n"
+            f"📋 *Upcoming Appointments:*\n{appt_lines}\n\n"
+            f"*(This number is designated as the Doctor recipient)*"
+        )
+
+    # ── 2. Standard Patient Flow ─────────────────────────────────────────────
     patient = get_patient(phone)
     
-    # If this is a completely brand new patient, register them automatically!
+    # If this is a brand new patient, register them automatically!
     if not patient:
         register_patient(phone, patient_name)
         patient = get_patient(phone) # Re-fetch so we have their dictionary properly loaded
