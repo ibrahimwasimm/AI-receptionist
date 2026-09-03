@@ -35,29 +35,110 @@ def register_patient(phone: str, name: str) -> None:
         supabase.table("patients").insert({"name": name, "phone": phone}).execute()
 
 
-def notify_doctor(patient_name: str, patient_phone: str, date_str: str, time_str: str):
-    """Sends an instant WhatsApp notification to the Doctor."""
+import json
+from datetime import datetime
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Doctor Notification Lookup & Registry
+# ─────────────────────────────────────────────────────────────────────────────
+# Test stand-in doctor number: 0331-1286436 -> "923311286436"
+DOCTOR_WHATSAPP_NUMBER = os.getenv("DOCTOR_WHATSAPP_NUMBER", "923311286436")
+
+# Lookup mapping doctor_id -> WhatsApp configuration
+# When ready for Dr. Musafer and Dr. Kassa, update phone numbers here or in .env
+DOCTOR_REGISTRY = {
+    "default": {
+        "name": "Dr. on Duty",
+        "whatsapp_number": DOCTOR_WHATSAPP_NUMBER,
+    },
+    "dr_musafer": {
+        "name": "Dr. Musafer",
+        "whatsapp_number": os.getenv("DR_MUSAFER_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
+    },
+    "dr_kassa": {
+        "name": "Dr. Kassa",
+        "whatsapp_number": os.getenv("DR_KASSA_WHATSAPP", DOCTOR_WHATSAPP_NUMBER),
+    },
+}
+
+
+def send_doctor_notification(booking: dict) -> bool:
+    """
+    Sends an instant WhatsApp notification to the assigned doctor right after
+    a booking is successfully created in Supabase.
+    """
+    doctor_id = booking.get("doctor_id", "default")
+    doctor_info = DOCTOR_REGISTRY.get(doctor_id, DOCTOR_REGISTRY["default"])
+    doctor_name = doctor_info["name"]
+    doctor_phone = doctor_info["whatsapp_number"]
+
     token = os.getenv("META_ACCESS_TOKEN")
     phone_id = os.getenv("META_PHONE_NUMBER_ID")
-    doctor_phone = os.getenv("DOCTOR_PHONE_NUMBER", "")
-    if not doctor_phone:
-        print("[Doctor Notification] DOCTOR_PHONE_NUMBER not set in .env — skipping WhatsApp alert.")
-        return
-    
-    message = f"🔔 *NEW BOOKING ALERT* 🔔\n\n*Patient:* {patient_name}\n*Phone:* {patient_phone}\n*Date:* {date_str}\n*Time:* {time_str}\n\n✅ This has been automatically added to your Google Calendar."
-    
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    if not token or not phone_id:
+        print("[Doctor Notification] META credentials missing in .env — skipping doctor alert.")
+        return False
+
+    patient_name = booking.get("patient_name", "Unknown Patient")
+    patient_phone = booking.get("patient_phone", "")
+    date_str = booking.get("date_str", "")
+    time_str = booking.get("time_str", "")
+    procedure = booking.get("procedure", "Dental Consultation")
+    notes = booking.get("notes") or "Booked via WhatsApp AI Receptionist"
+
+    message = (
+        f"🔔 *NEW BOOKING ALERT* 🔔\n\n"
+        f"👨‍⚕️ *Doctor:* {doctor_name}\n"
+        f"👤 *Patient:* {patient_name}\n"
+        f"📞 *Phone:* +{patient_phone}\n"
+        f"📅 *Date:* {date_str}\n"
+        f"⏰ *Time:* {time_str}\n"
+        f"🦷 *Procedure:* {procedure}\n"
+        f"📝 *Notes:* {notes}\n\n"
+        f"✅ *Status:* Automatically recorded in Google Calendar & Supabase."
+    )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     payload = {
         "messaging_product": "whatsapp",
+        "recipient_type": "individual",
         "to": doctor_phone,
         "type": "text",
         "text": {"body": message}
     }
-    
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n[Doctor Notification] [{timestamp}] Sending alert to {doctor_name} ({doctor_phone})")
+    print(f"[Doctor Notification] Outgoing Payload:\n{json.dumps(payload, indent=2)}")
+
     try:
-        httpx.post(f"https://graph.facebook.com/v19.0/{phone_id}/messages", headers=headers, json=payload, timeout=10.0)
+        url = f"https://graph.facebook.com/v19.0/{phone_id}/messages"
+        resp = httpx.post(url, headers=headers, json=payload, timeout=12.0)
+        if resp.status_code == 200:
+            msg_id = resp.json().get("messages", [{}])[0].get("id", "OK")
+            print(f"[Doctor Notification] [{timestamp}] ✅ Sent successfully to {doctor_phone} (Message ID: {msg_id})")
+            return True
+        else:
+            print(f"[Doctor Notification] [{timestamp}] ❌ Meta API Error {resp.status_code}: {resp.text}")
+            return False
     except Exception as e:
-        print(f"[Doctor Notification Failed] {e}")
+        print(f"[Doctor Notification] [{timestamp}] ❌ Failed: {e}")
+        return False
+
+
+def notify_doctor(patient_name: str, patient_phone: str, date_str: str, time_str: str):
+    """Backwards-compatible wrapper for existing callers."""
+    return send_doctor_notification({
+        "patient_name": patient_name,
+        "patient_phone": patient_phone,
+        "date_str": date_str,
+        "time_str": time_str,
+        "procedure": "Dental Appointment"
+    })
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -96,70 +177,27 @@ Language       : Respond in the same language the patient uses.
                  If English, reply in English.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-DENTAL PROCEDURES
+DENTAL SERVICES & PROCEDURES OFFERED
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-If a patient asks about fees, tell them fees are discussed at the consultation.
+If a patient asks about fees, tell them fees and customized treatment plans are confirmed during the in-person consultation.
 
-PREVENTIVE & GENERAL
-  D1110  –  Dental Cleaning / Scaling & Polishing
-  D1206  –  Fluoride Treatment
-  D0150  –  Comprehensive Oral Examination (New Patient)
-  D0120  –  Periodic Oral Examination (Follow-up)
-  D0210  –  Full Mouth X-Rays (OPG/FMX)
+1. CONSULTATION
+   - Comprehensive dental check-up, oral examination, and doctor advice for new and follow-up patients.
 
-RESTORATIVE (FILLINGS)
-  D2140  –  Amalgam Filling (1 surface)
-  D2330  –  Composite (Tooth-Colored) Filling (1 surface)
-  D2740  –  Porcelain / Ceramic Crown
-  D2710  –  Temporary Crown
-  D2950  –  Core Build-Up / Post & Core
+2. ROOT CANAL (RCT)
+   - Root canal treatment for decayed, infected, or painful teeth to save the natural tooth.
 
-ROOT CANAL TREATMENT (RCT)
-  D3310  –  RCT – Anterior Tooth (Front)
-  D3320  –  RCT – Premolar Tooth
-  D3330  –  RCT – Molar Tooth
-  (Note: Crown is recommended after RCT and is charged separately)
+3. ORAL CLEANING (SCALING & POLISHING)
+   - Professional teeth scaling and polishing for plaque/tartar removal, gum health, and stain cleaning.
 
-EXTRACTIONS
-  D7140  –  Simple Extraction (Loose/Decayed Tooth)
-  D7210  –  Surgical Extraction (Impacted Tooth)
-  D7240  –  Wisdom Tooth Removal (Surgical)
+4. WHITENING (TEETH WHITENING)
+   - Professional in-clinic teeth whitening treatment for a brighter, cleaner smile.
 
-ORTHODONTICS (BRACES)
-  D8080  –  Comprehensive Orthodontic Treatment – Metal Braces
-  D8090  –  Comprehensive Orthodontic Treatment – Ceramic Braces
-  D8660  –  Orthodontic Consultation & X-Rays
-  (Braces require multiple visits over 12–24 months)
+5. IMPLANT & BRIDGE
+   - Dental Implants (permanent artificial tooth roots) and Dental Bridges (fixed prosthetics) to replace missing teeth.
 
-COSMETIC DENTISTRY
-  D9975  –  Teeth Whitening (In-Clinic)
-  D2961  –  Dental Veneer (Composite, per tooth)
-  D2962  –  Dental Veneer (Porcelain, per tooth)
-
-PROSTHETICS (DENTURES & BRIDGES)
-  D5110  –  Complete Denture (Full Set – Upper or Lower)
-  D5213  –  Partial Denture (Removable)
-  D6240  –  Dental Bridge (3-Unit Porcelain)
-
-DENTAL IMPLANTS
-  D6010  –  Endosseous Implant (per implant)
-  D6065  –  Implant Crown (per crown)
-  (Implant treatment takes 3–6 months in total)
-
-CHILDREN'S DENTISTRY (PEDODONTICS)
-  D1351  –  Dental Sealants (per tooth)
-  D2930  –  Stainless Steel Crown (Milk Tooth)
-  D3230  –  Pulpotomy (Baby Root Canal)
-  D8010  –  Space Maintainer
-
-GUM TREATMENT (PERIODONTICS)
-  D4341  –  Deep Cleaning / Scaling & Root Planing (per quadrant)
-  D4260  –  Bone Graft (Periodontal)
-  D4210  –  Gingivectomy (Gum Surgery)
-
-EMERGENCY & PAIN RELIEF
-  D9110  –  Emergency Exam & Palliative Treatment
-  D9930  –  Treatment of Complications / Dry Socket
+6. BRACES (ORTHODONTICS)
+   - Orthodontic braces for teeth alignment, fixing gaps, and bite correction.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PATIENT CONTEXT
@@ -306,21 +344,38 @@ def handle_message(phone: str, incoming_message: str, patient_name: str = "Unkno
         else:
             if not reply:
                 reply = f"Perfect! Your appointment for {date_str} at {time_str} is confirmed. We look forward to seeing you!"
-            # Ping the doctor on WhatsApp!
-            notify_doctor(patient["name"], phone, date_str, time_str)
-            
-            # Save the appointment to Supabase so it shows up in your dashboard and works with reminders
+
+            # 1. Save the appointment to Supabase
             from datetime import datetime
             from zoneinfo import ZoneInfo
-            # Create a localized timestamp for Supabase
             slot_time = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M").replace(tzinfo=ZoneInfo("Asia/Karachi"))
-            supabase.table("appointments").insert({
+            
+            # Assigned doctor (defaults to 'default' test number; extensible per procedure or doctor selection)
+            assigned_doctor_id = "default"
+
+            supabase_res = supabase.table("appointments").insert({
                 "patient_phone": phone,
                 "patient_name": patient["name"],
                 "procedure": procedure_name,
                 "slot_time": slot_time.isoformat(),
                 "booked": True
             }).execute()
+
+            # 2. Right after the Supabase write succeeds, send a dedicated WhatsApp notification to the Doctor
+            if supabase_res.data:
+                booking_record = {
+                    "patient_name": patient["name"],
+                    "patient_phone": phone,
+                    "date_str": date_str,
+                    "time_str": time_str,
+                    "procedure": procedure_name,
+                    "doctor_id": assigned_doctor_id,
+                    "notes": patient.get("notes") or "Booked via WhatsApp AI Receptionist",
+                    "appointment_id": supabase_res.data[0].get("id")
+                }
+                send_doctor_notification(booking_record)
+            else:
+                print(f"[Booking Flow] Warning: Supabase insert returned no data for patient {patient['name']}. Doctor alert skipped.")
 
     # ── Parse and act on CANCEL tag ──────────────────────────────────────────
     cancel_match = re.search(r"CANCEL:(\d{4}-\d{2}-\d{2}):(\d{2}:\d{2})", reply)
