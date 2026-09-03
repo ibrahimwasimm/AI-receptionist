@@ -303,16 +303,33 @@ def get_chat_completion(system_prompt: str, conversation_history: list) -> str:
     return "Assalam o Alaikum! We are currently experiencing a brief technical delay. A clinic representative will assist you shortly."
 
 
+def normalize_phone(p: str) -> str:
+    """Normalize any phone format (e.g. 0331..., +92331..., 92331...) to plain digits."""
+    if not p:
+        return ""
+    digits = re.sub(r"[^\d]", "", str(p))
+    if digits.startswith("0") and len(digits) == 11:
+        digits = "92" + digits[1:]
+    return digits
+
+
 def handle_message(phone: str, incoming_message: str, patient_name: str = "Unknown Patient") -> str:
     """Main entry point. Takes the sender's phone + message, returns reply text."""
     # ── 1. Check if the sender is a Doctor ──────────────────────────────────
+    sender_clean = normalize_phone(phone)
     is_doctor = False
     doc_display_name = "Doctor"
+
     for doc_id, doc_data in DOCTOR_REGISTRY.items():
-        if phone == doc_data.get("whatsapp_number"):
-            is_doctor = True
-            doc_display_name = doc_data.get("name", "Doctor")
-            break
+        reg_num = doc_data.get("whatsapp_number", "")
+        reg_clean = normalize_phone(reg_num)
+        
+        # Match either exact normalized digits or last 10 digits (e.g. 3311286436)
+        if sender_clean and reg_clean:
+            if sender_clean == reg_clean or sender_clean[-10:] == reg_clean[-10:]:
+                is_doctor = True
+                doc_display_name = doc_data.get("name", "Doctor")
+                break
 
     if is_doctor:
         print(f"[Doctor Session] Recognized {doc_display_name} ({phone})")
