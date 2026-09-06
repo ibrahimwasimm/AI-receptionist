@@ -195,7 +195,29 @@
 
         <!-- PATIENTS VIEW -->
         <section id="view-patients" class="app-view" hidden>
-          <div class="coming-soon">Patients — coming next</div>
+          <!-- Search Bar -->
+          <div class="search-bar-wrap">
+            <div class="search-input-box">
+              <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input type="text" id="patient-search" class="search-input" placeholder="Search patients by name or phone..." autocomplete="off">
+              <button class="search-clear" id="search-clear" hidden aria-label="Clear search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Patient List -->
+          <div class="patient-list" id="patient-list"></div>
+
+          <!-- Empty / Initial State -->
+          <div class="empty-state" id="patients-empty">
+            <div class="empty-icon">👥</div>
+            <p class="empty-title">Search Patients</p>
+            <p class="empty-sub">Type a name or phone number above to find patient records and history.</p>
+          </div>
         </section>
 
         <!-- LAB VIEW -->
@@ -283,6 +305,37 @@
         <button class="status-opt status-opt--grey"   data-status="Appt Cancel/Postpone" id="status-cancel">Cancelled</button>
       </div>
     </div>
+  <!-- ═══════════════════════════════════════════════
+       PATIENT PROFILE MODAL (Bottom Sheet)
+  ════════════════════════════════════════════════ -->
+  <div id="modal-patient-profile" class="modal-overlay" hidden aria-modal="true" role="dialog">
+    <div class="bottom-sheet" id="sheet-patient-profile" style="max-height: 90vh;">
+      <div class="sheet-handle"></div>
+      
+      <div class="patient-profile-header">
+        <h2 class="sheet-title" id="profile-name">Patient Name</h2>
+        <div class="profile-meta">
+          <span id="profile-phone" class="meta-tag"></span>
+          <span id="profile-age" class="meta-tag"></span>
+          <span id="profile-gender" class="meta-tag"></span>
+        </div>
+      </div>
+
+      <div class="profile-content">
+        <h3 class="section-title">Treatment History</h3>
+        
+        <!-- Treatment List -->
+        <div class="treatment-list" id="treatment-list">
+          <!-- Populated dynamically via JS -->
+        </div>
+
+        <div class="empty-state" id="treatments-empty" hidden>
+          <div class="empty-icon">📝</div>
+          <p class="empty-title">No Treatments Found</p>
+          <p class="empty-sub">This patient has no recorded treatment history.</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Scripts -->
@@ -291,6 +344,7 @@
   <script src="js/api.js"></script>
   <script src="js/router.js"></script>
   <script src="js/views/today.js"></script>
+  <script src="js/views/patients.js"></script>
   <script src="js/app.js"></script>
 
 </body>

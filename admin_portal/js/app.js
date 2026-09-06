@@ -27,6 +27,7 @@ function initApp(doctor) {
 
   // ── Initialise first view (Today) ───────────────
   TodayView.init(doctor);
+  PatientsView.init();
 
   // ── Show FAB only on Today and Lab views ────────
   const fab = document.getElementById('fab-add');
