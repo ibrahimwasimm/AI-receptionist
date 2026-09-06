@@ -73,6 +73,22 @@ const API = (() => {
       return rows[0] || null;
     },
 
+    async getPatientsByNames(names) {
+      if (!names || names.length === 0) return [];
+      // Supabase in filter takes a comma separated list inside parens
+      const list = names.map(n => `"${n}"`).join(',');
+      return request(`/patients?name=in.(${encodeURIComponent(list)})&order=name.asc`);
+    },
+
+    async getTreatmentsByMonth(monthStr) {
+      // monthStr is like "2022-02"
+      const start = `${monthStr}-01`;
+      // Get last day of the month
+      const [y, m] = monthStr.split('-');
+      const end = new Date(y, m, 0).toISOString().split('T')[0];
+      return request(`/treatments?date=gte.${start}&date=lte.${end}&order=date.desc`);
+    },
+
     async createPatient(data) {
       return request('/patients', { method: 'POST', body: JSON.stringify(data) });
     },
@@ -83,7 +99,7 @@ const API = (() => {
 
     async getPatientTreatments(patientName) {
       const n = encodeURIComponent(patientName);
-      return request(`/treatments?patient_name=ilike.${n}&order=date.desc`);
+      return request(`/treatments?patient_name=eq.${n}&order=date.desc`);
     },
 
     // ── Services (for autocomplete) ───────────────

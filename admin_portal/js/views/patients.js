@@ -63,13 +63,19 @@ const PatientsView = (() => {
     const item = document.createElement('div');
     item.className = 'treatment-item';
     
+    // Some treatments have amounts and balances
+    const amtInfo = [];
+    if (t.amount) amtInfo.push(`Total: Rs ${t.amount}`);
+    if (t.paid) amtInfo.push(`Paid: Rs ${t.paid}`);
+    if (t.balance) amtInfo.push(`Bal: Rs ${t.balance}`);
+    
     item.innerHTML = `
       <div class="treatment-header">
         <span class="treatment-date">${formatDate(t.date)}</span>
-        <span class="treatment-doctor">${t.dr_name || ''}</span>
+        <span class="treatment-doctor">${t.visit_type || 'Visit'}</span>
       </div>
-      <div class="treatment-details">${t.treatment_details || 'Consultation'}</div>
-      ${t.tooth ? `<div class="treatment-tooth">Tooth: ${t.tooth}</div>` : ''}
+      <div class="treatment-details">${t.treatment || 'No details recorded'}</div>
+      ${amtInfo.length > 0 ? `<div class="treatment-tooth">${amtInfo.join(' • ')}</div>` : ''}
       ${t.notes ? `<div class="treatment-notes">${t.notes}</div>` : ''}
     `;
     return item;
@@ -145,15 +151,95 @@ const PatientsView = (() => {
     modalProfile.hidden = true;
   }
 
+  const monthInput   = document.getElementById('patient-month-filter');
+  const monthClear   = document.getElementById('month-clear');
+
+  // ── Perform Month Filter ──────────────────────────
+  async function filterByMonth(monthStr) {
+    listEl.innerHTML = '';
+    
+    if (!monthStr) {
+      search(searchInput.value.trim()); // Revert to text search
+      return;
+    }
+
+    // Clear text search when filtering by month
+    searchInput.value = '';
+    searchClear.hidden = true;
+
+    emptyEl.hidden = true;
+    listEl.innerHTML = '<div class="coming-soon">Loading patients for this month...</div>';
+
+    try {
+      // 1. Fetch all treatments for the selected month
+      const treatments = await API.getTreatmentsByMonth(monthStr);
+      
+      if (treatments.length === 0) {
+        listEl.innerHTML = '';
+        emptyEl.hidden = false;
+        emptyEl.querySelector('.empty-title').textContent = 'No visits found';
+        emptyEl.querySelector('.empty-sub').textContent = `No patients visited in ${monthStr}.`;
+        return;
+      }
+
+      // 2. Extract unique patient names
+      const uniqueNames = [...new Set(treatments.map(t => t.patient_name))].filter(Boolean);
+      
+      // 3. Fetch patient details for these names (in chunks if too many, but Supabase handles up to a limit. We'll slice 100 for safety)
+      const patients = await API.getPatientsByNames(uniqueNames.slice(0, 100));
+
+      listEl.innerHTML = '';
+      if (patients.length === 0) {
+        listEl.innerHTML = '<div class="coming-soon">Patients found in treatments but records missing.</div>';
+        return;
+      }
+
+      patients.forEach(p => {
+        listEl.appendChild(renderPatientCard(p));
+      });
+      
+      // Show total count at the top of the list
+      const countEl = document.createElement('div');
+      countEl.style.fontSize = 'var(--font-size-xs)';
+      countEl.style.color = 'var(--text-muted)';
+      countEl.style.fontWeight = '600';
+      countEl.style.padding = '0 4px 8px';
+      countEl.textContent = `Showing ${patients.length} patients who visited in this month`;
+      listEl.prepend(countEl);
+
+    } catch (err) {
+      console.error('[PATIENTS] Month filter failed:', err);
+      listEl.innerHTML = '<div class="coming-soon" style="color:var(--status-noshow-text)">Filter failed. Please try again.</div>';
+    }
+  }
+
   // ── Event Listeners ────────────────────────────────
   searchInput.addEventListener('input', e => {
     const val = e.target.value.trim();
     searchClear.hidden = val.length === 0;
     
+    // Clear month filter when typing text
+    if (val.length > 0 && monthInput.value) {
+      monthInput.value = '';
+      monthClear.hidden = true;
+    }
+
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       search(val);
     }, 300); // 300ms debounce
+  });
+
+  monthInput.addEventListener('change', e => {
+    const val = e.target.value;
+    monthClear.hidden = !val;
+    filterByMonth(val);
+  });
+
+  monthClear.addEventListener('click', () => {
+    monthInput.value = '';
+    monthClear.hidden = true;
+    search(searchInput.value.trim());
   });
 
   searchClear.addEventListener('click', () => {
