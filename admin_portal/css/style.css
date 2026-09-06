@@ -484,8 +484,19 @@ button {
   padding-bottom: calc(72px + var(--safe-bottom));
 }
 
+/* ── Content column (wraps top-bar + app-main + fab) ── */
+.content-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
 .app-view { display: none; }
 .app-view.active-view { display: block; }
+
 
 .coming-soon {
   padding: var(--space-2xl) var(--space-md);
@@ -1022,46 +1033,19 @@ button {
 .status-opt--grey  { background: var(--status-cancel-bg);     color: var(--status-cancel-text); }
 
 /* ═══════════════════════════════════════════════
-   RESPONSIVE — desktop centers content
-═══════════════════════════════════════════════ */
-@media (min-width: 768px) {
-  .app-main        { max-width: 640px; margin: 0 auto; }
-  .bottom-nav      { max-width: 640px; left: 50%; transform: translateX(-50%); border-radius: var(--radius-xl) var(--radius-xl) 0 0; border: 1px solid var(--cmd-blue-mid); }
-  .fab             { right: calc(50% - 320px + var(--space-lg)); }
-  .top-bar         { max-width: 640px; margin: 0 auto; border-radius: 0 0 var(--radius-md) var(--radius-md); }
-}
-
-
-/* ═══════════════════════════════════════════════
-   RESPONSIVE — tablets and desktops
-   Portal is mobile-first; desktop centers the card.
+   RESPONSIVE — Login: tablet/desktop card
 ═══════════════════════════════════════════════ */
 @media (min-width: 480px) {
-  .login-logo-wrap {
-    width: 100px;
-    height: 100px;
-  }
-
-  .login-clinic-name {
-    font-size: var(--font-size-xl);
-  }
-
-  .key-btn {
-    height: 70px;
-    font-size: 24px;
-  }
-
-  .key-empty {
-    height: 70px;
-  }
+  .login-logo-wrap   { width: 100px; height: 100px; }
+  .login-clinic-name { font-size: var(--font-size-xl); }
+  .key-btn           { height: 70px; font-size: 24px; }
+  .key-empty         { height: 70px; }
 }
 
 @media (min-width: 768px) {
   .screen-login {
-    /* On tablet/desktop, centered with a floating card feel */
-    background: linear-gradient(135deg, #1565A8 0%, #2196D3 50%, #42A5F5 100%);
+    background: linear-gradient(135deg, #1366A8 0%, #1E8FD5 50%, #42A5F5 100%);
   }
-
   .login-card {
     background: var(--card);
     border-radius: var(--radius-xl);
@@ -1069,9 +1053,182 @@ button {
     box-shadow: 0 20px 60px rgba(13, 62, 110, 0.30);
     max-width: 420px;
   }
-
-  .login-bg {
-    /* Blobs look great behind the blue gradient on desktop */
-    opacity: 0;
-  }
+  .login-bg { opacity: 0; }
 }
+
+/* ═══════════════════════════════════════════════
+   DESKTOP SIDEBAR LAYOUT  (≥ 900px)
+   Left sidebar nav + right content area.
+   Bottom nav hidden. Top bar is in content col.
+═══════════════════════════════════════════════ */
+@media (min-width: 900px) {
+
+  /* App shell becomes a horizontal flex row */
+  .screen-app {
+    flex-direction: row;
+    height: 100dvh;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  .bottom-nav {
+    position: static;
+    flex-direction: column;
+    align-items: stretch;
+    width: 220px;
+    min-width: 220px;
+    flex-shrink: 0;
+    height: 100%;
+    border-top: none;
+    border-right: 1px solid rgba(14, 42, 80, 0.08);
+    box-shadow: 2px 0 16px rgba(14, 42, 80, 0.05);
+    padding: 0 0 var(--space-lg);
+    justify-content: flex-start;
+    gap: 0;
+    overflow-y: auto;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--card);
+    transform: none;
+  }
+
+  /* Sidebar "CMD Portal" label */
+  .bottom-nav::before {
+    content: 'CMD Portal';
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 28px var(--space-md) 14px;
+    border-bottom: 1px solid rgba(14, 42, 80, 0.06);
+    margin-bottom: 8px;
+  }
+
+  /* Each nav button becomes a full-width sidebar row */
+  .nav-btn {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 11px 14px;
+    min-height: 46px;
+    border-radius: var(--radius-md);
+    margin: 2px 10px;
+    width: auto;
+    transition: background var(--trans-fast), color var(--trans-fast);
+  }
+  .nav-btn:hover { background: var(--bg); }
+  .nav-btn.active {
+    background: var(--cmd-blue-light);
+    color: var(--cmd-blue);
+  }
+  /* Remove top indicator — sidebar uses bg highlight */
+  .nav-btn.active::before { display: none; }
+
+  .nav-icon { width: 20px; height: 20px; flex-shrink: 0; }
+  .nav-btn.active .nav-icon { transform: none; }
+  .nav-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    text-transform: none;
+  }
+
+  /* ── Right content column ── */
+  .app-main {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+    margin: 0;
+    padding-bottom: 0;
+    overflow-y: auto;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Top bar at top of content column */
+  .top-bar {
+    position: sticky;
+    top: 0;
+    max-width: none;
+    margin: 0;
+    border-radius: 0;
+    z-index: 50;
+  }
+
+  /* FAB inside content column */
+  .fab {
+    right: var(--space-xl);
+    bottom: var(--space-xl);
+  }
+
+  /* Modals still cover whole viewport */
+  .modal-overlay { position: fixed; inset: 0; }
+
+  /* Active views fill column height */
+  .app-view.active-view { flex: 1; }
+}
+
+/* ═══════════════════════════════════════════════
+   TABLET — icon-only narrow sidebar (600–899px)
+═══════════════════════════════════════════════ */
+@media (min-width: 600px) and (max-width: 899px) {
+  .screen-app {
+    flex-direction: row;
+    height: 100dvh;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .bottom-nav {
+    position: static;
+    flex-direction: column;
+    align-items: center;
+    width: 68px;
+    min-width: 68px;
+    flex-shrink: 0;
+    height: 100%;
+    border-top: none;
+    border-right: 1px solid rgba(14, 42, 80, 0.08);
+    padding: var(--space-md) 0;
+    gap: 4px;
+    overflow-y: auto;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--card);
+    box-shadow: 2px 0 12px rgba(14, 42, 80, 0.06);
+    transform: none;
+  }
+
+  .nav-btn {
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 4px;
+    width: 52px;
+    border-radius: var(--radius-md);
+    min-height: unset;
+  }
+  .nav-btn:hover { background: var(--bg); }
+  .nav-btn.active { background: var(--cmd-blue-light); }
+  .nav-btn.active::before { display: none; }
+  .nav-label { font-size: 8.5px; text-transform: uppercase; }
+
+  .app-main {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+    margin: 0;
+    padding-bottom: 0;
+    height: 100%;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .top-bar { position: sticky; top: 0; max-width: none; margin: 0; border-radius: 0; }
+  .fab     { right: var(--space-lg); bottom: var(--space-lg); }
+}
+
