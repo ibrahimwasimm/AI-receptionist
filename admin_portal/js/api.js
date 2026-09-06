@@ -76,8 +76,9 @@ const API = (() => {
     async getPatientsByNames(names) {
       if (!names || names.length === 0) return [];
       // Supabase in filter takes a comma separated list inside parens
-      const list = names.map(n => `"${n}"`).join(',');
-      return request(`/patients?name=in.(${encodeURIComponent(list)})&order=name.asc`);
+      // E.g. in.("Name 1","Name 2")
+      const list = names.map(n => `%22${encodeURIComponent(n)}%22`).join(',');
+      return request(`/patients?name=in.(${list})&order=name.asc`);
     },
 
     async getTreatmentsByMonth(monthStr) {

@@ -163,6 +163,14 @@ const PatientsView = (() => {
       return;
     }
 
+    // If browser doesn't support <input type="month"> and user types plain text
+    if (!monthStr.match(/^\d{4}-\d{2}$/)) {
+      emptyEl.hidden = false;
+      emptyEl.querySelector('.empty-title').textContent = 'Invalid Format';
+      emptyEl.querySelector('.empty-sub').textContent = 'Please use YYYY-MM format (e.g. 2026-09) or search by name above.';
+      return;
+    }
+
     // Clear text search when filtering by month
     searchInput.value = '';
     searchClear.hidden = true;
